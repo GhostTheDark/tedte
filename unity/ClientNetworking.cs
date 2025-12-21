@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -11,6 +12,10 @@ namespace RustlikeClient.Network
         private NetworkStream _stream;
         private bool _isConnected;
         private byte[] _receiveBuffer;
+
+        // ⭐ NOVO: Buffer para pacotes recebidos durante operações críticas
+        private Queue<Packet> _packetBuffer = new Queue<Packet>();
+        private bool _isProcessingPackets = true;
 
         public event Action<Packet> OnPacketReceived;
         public event Action OnDisconnected;
@@ -66,11 +71,23 @@ namespace RustlikeClient.Network
                     Packet packet = Packet.Deserialize(receivedData);
                     if (packet != null)
                     {
-                        // Invoca no main thread do Unity
-                        UnityMainThreadDispatcher.Instance.Enqueue(() =>
+                        // ⭐ CORREÇÃO: Adiciona ao buffer se não está processando
+                        if (!_isProcessingPackets)
                         {
-                            OnPacketReceived?.Invoke(packet);
-                        });
+                            lock (_packetBuffer)
+                            {
+                                _packetBuffer.Enqueue(packet);
+                                Debug.Log($"[ClientNetworking] Pacote {packet.Type} bufferizado (processamento pausado). Buffer: {_packetBuffer.Count}");
+                            }
+                        }
+                        else
+                        {
+                            // Invoca no main thread do Unity
+                            UnityMainThreadDispatcher.Instance.Enqueue(() =>
+                            {
+                                OnPacketReceived?.Invoke(packet);
+                            });
+                        }
                     }
                 }
             }
@@ -78,6 +95,37 @@ namespace RustlikeClient.Network
             {
                 Debug.LogError($"[ClientNetworking] Erro na recepção: {ex.Message}");
                 Disconnect();
+            }
+        }
+
+        // ⭐ NOVO: Pausa o processamento de pacotes
+        public void PausePacketProcessing()
+        {
+            _isProcessingPackets = false;
+            Debug.Log("[ClientNetworking] ⏸️ Processamento de pacotes PAUSADO");
+        }
+
+        // ⭐ NOVO: Resume o processamento e processa pacotes bufferizados
+        public void ResumePacketProcessing()
+        {
+            _isProcessingPackets = true;
+            Debug.Log("[ClientNetworking] ▶️ Processamento de pacotes RESUMIDO");
+
+            // Processa todos os pacotes que chegaram enquanto estava pausado
+            lock (_packetBuffer)
+            {
+                Debug.Log($"[ClientNetworking] Processando {_packetBuffer.Count} pacotes bufferizados...");
+                
+                while (_packetBuffer.Count > 0)
+                {
+                    var packet = _packetBuffer.Dequeue();
+                    Debug.Log($"[ClientNetworking] Processando pacote bufferizado: {packet.Type}");
+                    
+                    UnityMainThreadDispatcher.Instance.Enqueue(() =>
+                    {
+                        OnPacketReceived?.Invoke(packet);
+                    });
+                }
             }
         }
 
@@ -125,7 +173,7 @@ namespace RustlikeClient.Network
     public class UnityMainThreadDispatcher : MonoBehaviour
     {
         private static UnityMainThreadDispatcher _instance;
-        private readonly System.Collections.Generic.Queue<Action> _executionQueue = new System.Collections.Generic.Queue<Action>();
+        private readonly Queue<Action> _executionQueue = new Queue<Action>();
 
         public static UnityMainThreadDispatcher Instance
         {
