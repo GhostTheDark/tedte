@@ -89,6 +89,9 @@ namespace RustlikeServer.Core
             // Cria o jogador no servidor
             _player = _server.CreatePlayer(request.PlayerName);
 
+            // IMPORTANTE: Registra este ClientHandler no servidor ANTES de enviar qualquer coisa
+            _server.RegisterClient(_player.Id, this);
+
             // Envia resposta de aceitação
             var response = new ConnectionAcceptPacket
             {
@@ -101,11 +104,11 @@ namespace RustlikeServer.Core
             await SendPacket(PacketType.ConnectionAccept, response.Serialize());
             Console.WriteLine($"[ClientHandler] Jogador {_player.Name} (ID: {_player.Id}) conectado e spawned");
 
-            // Notifica outros jogadores sobre o novo jogador
-            _server.BroadcastPlayerSpawn(_player);
-
-            // Envia informações de jogadores existentes para o novo jogador
+            // Envia informações de jogadores existentes para o novo jogador PRIMEIRO
             await _server.SendExistingPlayersTo(this);
+
+            // Depois notifica outros jogadores sobre o novo jogador
+            _server.BroadcastPlayerSpawn(_player);
         }
 
         private void HandlePlayerMovement(byte[] data)

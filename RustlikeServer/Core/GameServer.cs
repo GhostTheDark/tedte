@@ -42,10 +42,7 @@ namespace RustlikeServer.Core
                 Console.WriteLine($"╚════════════════════════════════════════════════╝");
                 Console.WriteLine();
 
-                // Task para aceitar conexões
                 Task acceptTask = AcceptClientsAsync();
-
-                // Task para monitorar jogadores
                 Task monitorTask = MonitorPlayersAsync();
 
                 await Task.WhenAll(acceptTask, monitorTask);
@@ -64,7 +61,7 @@ namespace RustlikeServer.Core
                 {
                     TcpClient client = await _listener.AcceptTcpClientAsync();
                     ClientHandler handler = new ClientHandler(client, this);
-                    _ = handler.HandleClientAsync(); // Fire and forget
+                    _ = handler.HandleClientAsync();
                 }
                 catch (Exception ex)
                 {
@@ -77,7 +74,7 @@ namespace RustlikeServer.Core
         {
             while (_isRunning)
             {
-                await Task.Delay(5000); // Verifica a cada 5 segundos
+                await Task.Delay(5000);
 
                 var timedOutPlayers = _players.Values.Where(p => p.IsTimedOut()).ToList();
                 
@@ -87,8 +84,7 @@ namespace RustlikeServer.Core
                     RemovePlayer(player.Id);
                 }
 
-                // Log de status
-                Console.WriteLine($"[GameServer] Jogadores online: {_players.Count}");
+                Console.WriteLine($"[GameServer] Jogadores online: {_players.Count} | Clients conectados: {_clients.Count}");
             }
         }
 
@@ -97,6 +93,7 @@ namespace RustlikeServer.Core
             int id = _nextPlayerId++;
             Player player = new Player(id, name);
             _players[id] = player;
+            Console.WriteLine($"[GameServer] Player criado: {name} (ID: {id})");
             return player;
         }
 
@@ -104,16 +101,16 @@ namespace RustlikeServer.Core
         {
             if (_players.ContainsKey(playerId))
             {
+                var playerName = _players[playerId].Name;
                 _players.Remove(playerId);
+                Console.WriteLine($"[GameServer] Player removido: {playerName} (ID: {playerId})");
                 
-                // Remove o cliente handler
                 if (_clients.ContainsKey(playerId))
                 {
                     _clients[playerId].Disconnect();
                     _clients.Remove(playerId);
                 }
 
-                // Notifica outros jogadores sobre a desconexão
                 BroadcastPlayerDisconnect(playerId);
             }
         }
@@ -121,6 +118,7 @@ namespace RustlikeServer.Core
         public void RegisterClient(int playerId, ClientHandler handler)
         {
             _clients[playerId] = handler;
+            Console.WriteLine($"[GameServer] ClientHandler registrado para Player ID: {playerId} | Total de clients: {_clients.Count}");
         }
 
         public void BroadcastPlayerSpawn(Player player)
@@ -135,6 +133,7 @@ namespace RustlikeServer.Core
             };
 
             byte[] data = spawnPacket.Serialize();
+            Console.WriteLine($"[GameServer] Broadcasting spawn de {player.Name} (ID: {player.Id}) para {_clients.Count - 1} outros jogadores");
             BroadcastToAll(PacketType.PlayerSpawn, data, player.Id);
         }
 
@@ -157,14 +156,30 @@ namespace RustlikeServer.Core
         public void BroadcastPlayerDisconnect(int playerId)
         {
             byte[] data = BitConverter.GetBytes(playerId);
+            Console.WriteLine($"[GameServer] Broadcasting disconnect de Player ID: {playerId}");
             BroadcastToAll(PacketType.PlayerDisconnect, data, playerId);
         }
 
         public async Task SendExistingPlayersTo(ClientHandler newClient)
         {
+            var newPlayerId = newClient.GetPlayer()?.Id ?? -1;
+            int count = 0;
+
+            Console.WriteLine($"[GameServer] ========== ENVIANDO PLAYERS EXISTENTES ==========");
+            Console.WriteLine($"[GameServer] Novo player ID: {newPlayerId}");
+            Console.WriteLine($"[GameServer] Total de players no servidor: {_players.Count}");
+
             foreach (var player in _players.Values)
             {
-                if (player.Id == newClient.GetPlayer()?.Id) continue;
+                Console.WriteLine($"[GameServer] Verificando player: {player.Name} (ID: {player.Id})");
+                
+                if (player.Id == newPlayerId)
+                {
+                    Console.WriteLine($"[GameServer]   → Pulando (é o próprio player)");
+                    continue;
+                }
+
+                Console.WriteLine($"[GameServer]   → Enviando spawn de {player.Name} para novo player...");
 
                 var spawnPacket = new PlayerSpawnPacket
                 {
@@ -175,13 +190,30 @@ namespace RustlikeServer.Core
                     PosZ = player.Position.Z
                 };
 
-                await newClient.SendPacket(PacketType.PlayerSpawn, spawnPacket.Serialize());
+                byte[] data = spawnPacket.Serialize();
+                Console.WriteLine($"[GameServer]   → Dados serializados: {data.Length} bytes");
+                Console.WriteLine($"[GameServer]   → PlayerID={player.Id}, Name={player.Name}, Pos=({player.Position.X}, {player.Position.Y}, {player.Position.Z})");
+
+                try
+                {
+                    await newClient.SendPacket(PacketType.PlayerSpawn, data);
+                    Console.WriteLine($"[GameServer]   → ✅ Pacote PlayerSpawn ENVIADO com sucesso!");
+                    count++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[GameServer]   → ❌ ERRO ao enviar: {ex.Message}");
+                }
             }
+
+            Console.WriteLine($"[GameServer] ========== FIM DO ENVIO ==========");
+            Console.WriteLine($"[GameServer] Total de players enviados: {count}");
         }
 
         private async void BroadcastToAll(PacketType type, byte[] data, int excludePlayerId = -1)
         {
             var tasks = new List<Task>();
+            int sentCount = 0;
 
             foreach (var kvp in _clients)
             {
@@ -189,9 +221,18 @@ namespace RustlikeServer.Core
                 if (!kvp.Value.IsConnected()) continue;
 
                 tasks.Add(kvp.Value.SendPacket(type, data));
+                sentCount++;
             }
 
-            await Task.WhenAll(tasks);
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+
+            if (sentCount > 0)
+            {
+                Console.WriteLine($"[GameServer] Broadcast {type} enviado para {sentCount} jogadores (excluindo ID: {excludePlayerId})");
+            }
         }
 
         public void Stop()
