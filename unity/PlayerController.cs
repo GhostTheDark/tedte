@@ -2,6 +2,9 @@ using UnityEngine;
 
 namespace RustlikeClient.Player
 {
+    /// <summary>
+    /// ⭐ MELHORADO: Desabilita movimento quando inventário está aberto
+    /// </summary>
     public class PlayerController : MonoBehaviour
     {
         [Header("Components")]
@@ -10,15 +13,15 @@ namespace RustlikeClient.Player
 
         [Header("Network Sync")]
         [Tooltip("Taxa de envio de pacotes de movimento (em segundos)")]
-        public float networkSyncRate = 0.1f; // ⭐ 10 pacotes por segundo (era 20!)
+        public float networkSyncRate = 0.1f;
         private float _lastNetworkSync;
 
         [Header("Optimization")]
         [Tooltip("Distância mínima de movimento para enviar pacote")]
-        public float minMovementThreshold = 0.01f; // Só envia se moveu mais que 1cm
+        public float minMovementThreshold = 0.01f;
         
         [Tooltip("Ângulo mínimo de rotação para enviar pacote")]
-        public float minRotationThreshold = 1f; // Só envia se girou mais que 1 grau
+        public float minRotationThreshold = 1f;
 
         private Vector3 _lastSentPosition;
         private Vector2 _lastSentRotation;
@@ -44,6 +47,16 @@ namespace RustlikeClient.Player
 
         private void Update()
         {
+            // ⭐ NOVO: Desabilita movimento quando inventário está aberto
+            bool inventoryOpen = UI.InventoryManager.Instance != null && 
+                                 UI.InventoryManager.Instance.IsInventoryOpen();
+
+            if (_movement != null)
+            {
+                _movement.SetMovementEnabled(!inventoryOpen);
+            }
+
+            // Sempre sincroniza com servidor (mesmo parado)
             SyncWithServer();
         }
 
@@ -92,6 +105,7 @@ namespace RustlikeClient.Player
         public Vector3 GetPosition() => _movement.GetPosition();
         public bool IsGrounded() => _movement.IsGrounded();
         public float GetSpeed() => _movement.GetCurrentSpeed();
+        public bool IsMovementEnabled() => _movement.IsMovementEnabled();
 
         /// <summary>
         /// Para debug - mostra info de rede
@@ -100,7 +114,10 @@ namespace RustlikeClient.Player
         {
             if (Input.GetKey(KeyCode.F3))
             {
-                GUI.Box(new Rect(10, 230, 250, 100), "Network Stats (F3)");
+                bool inventoryOpen = UI.InventoryManager.Instance != null && 
+                                     UI.InventoryManager.Instance.IsInventoryOpen();
+
+                GUI.Box(new Rect(10, 230, 250, 120), "Network Stats (F3)");
                 
                 float timeSinceLastSync = Time.time - _lastNetworkSync;
                 float posDistance = Vector3.Distance(transform.position, _lastSentPosition);
@@ -108,6 +125,8 @@ namespace RustlikeClient.Player
                 GUI.Label(new Rect(20, 255, 230, 20), $"Last sync: {timeSinceLastSync:F2}s ago");
                 GUI.Label(new Rect(20, 275, 230, 20), $"Pos delta: {posDistance:F3}m");
                 GUI.Label(new Rect(20, 295, 230, 20), $"Send rate: {1f/networkSyncRate:F0} pkt/s");
+                GUI.Label(new Rect(20, 315, 230, 20), $"Movement: {(IsMovementEnabled() ? "ENABLED" : "DISABLED")}");
+                GUI.Label(new Rect(20, 335, 230, 20), $"Inventory: {(inventoryOpen ? "OPEN" : "CLOSED")}");
             }
         }
     }

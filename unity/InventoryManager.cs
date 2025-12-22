@@ -5,6 +5,7 @@ namespace RustlikeClient.UI
 {
     /// <summary>
     /// Gerenciador central do inventário (sincroniza com servidor)
+    /// ⭐ MELHORADO: Tecla E para abrir, melhor controle de cursor, feedback sonoro
     /// </summary>
     public class InventoryManager : MonoBehaviour
     {
@@ -14,6 +15,21 @@ namespace RustlikeClient.UI
         public const int INVENTORY_SIZE = 24;
         public const int HOTBAR_SIZE = 6;
 
+        [Header("Input Settings")]
+        [Tooltip("Tecla para abrir/fechar inventário")]
+        public KeyCode inventoryKey = KeyCode.E;
+        
+        [Tooltip("Teclas alternativas para abrir inventário")]
+        public KeyCode[] alternativeKeys = { KeyCode.Tab, KeyCode.I };
+
+        [Header("Audio Feedback (Optional)")]
+        public AudioClip inventoryOpenSound;
+        public AudioClip inventoryCloseSound;
+        public AudioClip itemUseSound;
+        public AudioClip itemMoveSound;
+        
+        private AudioSource _audioSource;
+
         // Estado local do inventário (sincronizado com servidor)
         private Dictionary<int, SlotData> _slots = new Dictionary<int, SlotData>();
         private int _selectedHotbarSlot = 0;
@@ -21,6 +37,10 @@ namespace RustlikeClient.UI
         // Referências de UI
         private InventoryUI _inventoryUI;
         private HotbarUI _hotbarUI;
+
+        // Estado do cursor antes de abrir inventário
+        private CursorLockMode _previousCursorLockMode;
+        private bool _previousCursorVisible;
 
         private void Awake()
         {
@@ -39,6 +59,11 @@ namespace RustlikeClient.UI
                 _slots[i] = new SlotData { itemId = -1, quantity = 0 };
             }
 
+            // Setup audio
+            _audioSource = gameObject.AddComponent<AudioSource>();
+            _audioSource.playOnAwake = false;
+            _audioSource.spatialBlend = 0f; // 2D sound
+
             Debug.Log("[InventoryManager] Inicializado");
         }
 
@@ -46,6 +71,16 @@ namespace RustlikeClient.UI
         {
             _inventoryUI = FindObjectOfType<InventoryUI>();
             _hotbarUI = FindObjectOfType<HotbarUI>();
+
+            if (_inventoryUI == null)
+            {
+                Debug.LogWarning("[InventoryManager] InventoryUI não encontrado na cena!");
+            }
+
+            if (_hotbarUI == null)
+            {
+                Debug.LogWarning("[InventoryManager] HotbarUI não encontrado na cena!");
+            }
         }
 
         /// <summary>
@@ -93,8 +128,8 @@ namespace RustlikeClient.UI
                 packet.Serialize()
             );
 
-            // Feedback imediato (será corrigido quando servidor responder)
-            PlayUseSound();
+            // Feedback imediato
+            PlaySound(itemUseSound);
         }
 
         /// <summary>
@@ -118,6 +153,9 @@ namespace RustlikeClient.UI
                 Network.PacketType.ItemMove,
                 packet.Serialize()
             );
+
+            // Feedback imediato
+            PlaySound(itemMoveSound);
         }
 
         /// <summary>
@@ -198,9 +236,72 @@ namespace RustlikeClient.UI
             return count;
         }
 
-        private void PlayUseSound()
+        /// <summary>
+        /// Toca som de feedback
+        /// </summary>
+        private void PlaySound(AudioClip clip)
         {
-            // TODO: Adicionar som de usar item
+            if (clip != null && _audioSource != null)
+            {
+                _audioSource.PlayOneShot(clip);
+            }
+        }
+
+        /// <summary>
+        /// Abre inventário
+        /// </summary>
+        public void OpenInventory()
+        {
+            if (_inventoryUI == null) return;
+            if (_inventoryUI.IsOpen()) return;
+
+            // Salva estado do cursor
+            _previousCursorLockMode = Cursor.lockState;
+            _previousCursorVisible = Cursor.visible;
+
+            _inventoryUI.Open();
+            PlaySound(inventoryOpenSound);
+
+            Debug.Log("[InventoryManager] Inventário aberto com tecla E");
+        }
+
+        /// <summary>
+        /// Fecha inventário
+        /// </summary>
+        public void CloseInventory()
+        {
+            if (_inventoryUI == null) return;
+            if (!_inventoryUI.IsOpen()) return;
+
+            _inventoryUI.Close();
+            PlaySound(inventoryCloseSound);
+
+            Debug.Log("[InventoryManager] Inventário fechado");
+        }
+
+        /// <summary>
+        /// Alterna inventário
+        /// </summary>
+        public void ToggleInventory()
+        {
+            if (_inventoryUI == null) return;
+
+            if (_inventoryUI.IsOpen())
+            {
+                CloseInventory();
+            }
+            else
+            {
+                OpenInventory();
+            }
+        }
+
+        /// <summary>
+        /// Verifica se o inventário está aberto
+        /// </summary>
+        public bool IsInventoryOpen()
+        {
+            return _inventoryUI != null && _inventoryUI.IsOpen();
         }
 
         /// <summary>
@@ -208,38 +309,52 @@ namespace RustlikeClient.UI
         /// </summary>
         private void Update()
         {
-            // Teclas 1-6: Seleciona hotbar
-            for (int i = 0; i < HOTBAR_SIZE; i++)
-            {
-                if (Input.GetKeyDown(KeyCode.Alpha1 + i))
-                {
-                    SelectHotbarSlot(i);
-                }
-            }
-
-            // Mouse scroll: Navega hotbar
-            float scroll = Input.GetAxis("Mouse ScrollWheel");
-            if (scroll > 0f)
-            {
-                SelectHotbarSlot((_selectedHotbarSlot - 1 + HOTBAR_SIZE) % HOTBAR_SIZE);
-            }
-            else if (scroll < 0f)
-            {
-                SelectHotbarSlot((_selectedHotbarSlot + 1) % HOTBAR_SIZE);
-            }
-
-            // Tab ou I: Abre/fecha inventário
-            if (Input.GetKeyDown(KeyCode.Tab) || Input.GetKeyDown(KeyCode.I))
+            // ⭐ NOVO: Tecla E para abrir/fechar inventário
+            if (Input.GetKeyDown(inventoryKey))
             {
                 ToggleInventory();
             }
-        }
 
-        private void ToggleInventory()
-        {
-            if (_inventoryUI != null)
+            // Teclas alternativas (Tab, I)
+            foreach (var key in alternativeKeys)
             {
-                _inventoryUI.Toggle();
+                if (Input.GetKeyDown(key))
+                {
+                    ToggleInventory();
+                    break;
+                }
+            }
+
+            // ⭐ MELHORADO: ESC apenas fecha inventário (não trava cursor)
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                if (IsInventoryOpen())
+                {
+                    CloseInventory();
+                }
+            }
+
+            // Teclas 1-6: Seleciona hotbar (apenas quando inventário fechado)
+            if (!IsInventoryOpen())
+            {
+                for (int i = 0; i < HOTBAR_SIZE; i++)
+                {
+                    if (Input.GetKeyDown(KeyCode.Alpha1 + i))
+                    {
+                        SelectHotbarSlot(i);
+                    }
+                }
+
+                // Mouse scroll: Navega hotbar
+                float scroll = Input.GetAxis("Mouse ScrollWheel");
+                if (scroll > 0f)
+                {
+                    SelectHotbarSlot((_selectedHotbarSlot - 1 + HOTBAR_SIZE) % HOTBAR_SIZE);
+                }
+                else if (scroll < 0f)
+                {
+                    SelectHotbarSlot((_selectedHotbarSlot + 1) % HOTBAR_SIZE);
+                }
             }
         }
     }

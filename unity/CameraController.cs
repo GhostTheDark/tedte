@@ -2,6 +2,9 @@ using UnityEngine;
 
 namespace RustlikeClient.Player
 {
+    /// <summary>
+    /// ⭐ MELHORADO: Respeita estado do inventário, não trava cursor quando inventário está aberto
+    /// </summary>
     public class CameraController : MonoBehaviour
     {
         [Header("Camera Settings")]
@@ -18,14 +21,14 @@ namespace RustlikeClient.Player
         private Camera _camera;
         private float _pitch = 0f;
         private float _yaw = 0f;
+        private bool _cursorWasLocked = true;
 
         private void Awake()
         {
             _camera = GetComponent<Camera>();
             
-            // Trava e esconde o cursor
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
+            // Trava e esconde o cursor no início
+            LockCursor();
         }
 
         private void Start()
@@ -38,9 +41,36 @@ namespace RustlikeClient.Player
 
         private void Update()
         {
-            HandleMouseLook();
+            HandleCursorState();
+            
+            // Só processa mouse look se cursor estiver travado
+            if (Cursor.lockState == CursorLockMode.Locked)
+            {
+                HandleMouseLook();
+            }
+            
             HandleFOV();
             HandleCursorToggle();
+        }
+
+        /// <summary>
+        /// ⭐ NOVO: Verifica estado do inventário e ajusta cursor automaticamente
+        /// </summary>
+        private void HandleCursorState()
+        {
+            bool inventoryOpen = UI.InventoryManager.Instance != null && 
+                                 UI.InventoryManager.Instance.IsInventoryOpen();
+
+            // Se inventário abriu, libera cursor
+            if (inventoryOpen && Cursor.lockState == CursorLockMode.Locked)
+            {
+                UnlockCursor();
+            }
+            // Se inventário fechou, trava cursor novamente
+            else if (!inventoryOpen && Cursor.lockState != CursorLockMode.Locked)
+            {
+                LockCursor();
+            }
         }
 
         private void HandleMouseLook()
@@ -69,10 +99,13 @@ namespace RustlikeClient.Player
         {
             if (_camera == null) return;
 
-            // Altera FOV ao correr
+            // Altera FOV ao correr (apenas se inventário fechado)
+            bool inventoryOpen = UI.InventoryManager.Instance != null && 
+                                 UI.InventoryManager.Instance.IsInventoryOpen();
+            
             float targetFOV = normalFOV;
             
-            if (Input.GetKey(KeyCode.LeftShift))
+            if (!inventoryOpen && Input.GetKey(KeyCode.LeftShift))
             {
                 targetFOV = runFOV;
             }
@@ -82,20 +115,39 @@ namespace RustlikeClient.Player
 
         private void HandleCursorToggle()
         {
-            // ESC para liberar/travar cursor
-            if (Input.GetKeyDown(KeyCode.Escape))
+            // ⭐ MELHORADO: ESC não faz mais toggle de cursor (isso é gerenciado pelo inventário)
+            // Mantido apenas para debug/emergência com ALT+ESC
+            if (Input.GetKey(KeyCode.LeftAlt) && Input.GetKeyDown(KeyCode.Escape))
             {
                 if (Cursor.lockState == CursorLockMode.Locked)
                 {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
+                    UnlockCursor();
+                    Debug.Log("[CameraController] Cursor liberado manualmente (ALT+ESC)");
                 }
                 else
                 {
-                    Cursor.lockState = CursorLockMode.Locked;
-                    Cursor.visible = false;
+                    LockCursor();
+                    Debug.Log("[CameraController] Cursor travado manualmente (ALT+ESC)");
                 }
             }
+        }
+
+        /// <summary>
+        /// Trava o cursor
+        /// </summary>
+        public void LockCursor()
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
+
+        /// <summary>
+        /// Libera o cursor
+        /// </summary>
+        public void UnlockCursor()
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
 
         public Vector2 GetRotation()
@@ -106,6 +158,20 @@ namespace RustlikeClient.Player
         public void SetSensitivity(float sensitivity)
         {
             mouseSensitivity = sensitivity;
+        }
+
+        /// <summary>
+        /// Para debug
+        /// </summary>
+        private void OnGUI()
+        {
+            if (Input.GetKey(KeyCode.F4))
+            {
+                GUI.Box(new Rect(10, 340, 200, 80), "Camera (F4)");
+                GUI.Label(new Rect(20, 365, 180, 20), $"Yaw: {_yaw:F1}°");
+                GUI.Label(new Rect(20, 385, 180, 20), $"Pitch: {_pitch:F1}°");
+                GUI.Label(new Rect(20, 405, 180, 20), $"Cursor: {Cursor.lockState}");
+            }
         }
     }
 }

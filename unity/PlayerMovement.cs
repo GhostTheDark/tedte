@@ -2,6 +2,9 @@ using UnityEngine;
 
 namespace RustlikeClient.Player
 {
+    /// <summary>
+    /// ⭐ MELHORADO: Suporta desabilitar movimento quando UI está aberta
+    /// </summary>
     [RequireComponent(typeof(CharacterController))]
     public class PlayerMovement : MonoBehaviour
     {
@@ -15,6 +18,9 @@ namespace RustlikeClient.Player
         public Transform groundCheck;
         public float groundDistance = 0.4f;
         public LayerMask groundMask;
+
+        [Header("State")]
+        [SerializeField] private bool _movementEnabled = true;
 
         private CharacterController _controller;
         private Vector3 _velocity;
@@ -38,7 +44,18 @@ namespace RustlikeClient.Player
         private void Update()
         {
             HandleGroundCheck();
-            HandleMovement();
+            
+            // ⭐ NOVO: Só processa movimento se estiver habilitado
+            if (_movementEnabled)
+            {
+                HandleMovement();
+            }
+            else
+            {
+                _currentSpeed = 0f;
+            }
+            
+            // Gravidade sempre ativa
             HandleGravity();
         }
 
@@ -81,8 +98,29 @@ namespace RustlikeClient.Player
             _controller.Move(_velocity * Time.deltaTime);
         }
 
+        /// <summary>
+        /// ⭐ NOVO: Habilita/desabilita movimento
+        /// </summary>
+        public void SetMovementEnabled(bool enabled)
+        {
+            _movementEnabled = enabled;
+        }
+
+        public bool IsMovementEnabled() => _movementEnabled;
         public Vector3 GetPosition() => transform.position;
         public bool IsGrounded() => _isGrounded;
         public float GetCurrentSpeed() => _currentSpeed;
+
+        /// <summary>
+        /// Para debug
+        /// </summary>
+        private void OnDrawGizmos()
+        {
+            if (groundCheck != null)
+            {
+                Gizmos.color = _isGrounded ? Color.green : Color.red;
+                Gizmos.DrawWireSphere(groundCheck.position, groundDistance);
+            }
+        }
     }
 }
