@@ -84,7 +84,27 @@ namespace RustlikeServer.Core
                     RemovePlayer(player.Id);
                 }
 
-                Console.WriteLine($"[GameServer] Jogadores online: {_players.Count} | Clients conectados: {_clients.Count}");
+                // ⭐ VISUAL MELHORADO - Mostra jogadores online com mais destaque
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"\n╔════════════════════════════════════════════════╗");
+                Console.WriteLine($"║  JOGADORES ONLINE: {_players.Count,-2}                         ║");
+                Console.WriteLine($"║  CLIENTS CONECTADOS: {_clients.Count,-2}                      ║");
+                Console.WriteLine($"╚════════════════════════════════════════════════╝");
+                
+                if (_players.Count > 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("\n→ Lista de Jogadores:");
+                    foreach (var player in _players.Values)
+                    {
+                        Console.WriteLine($"   • ID {player.Id}: {player.Name}");
+                        Console.WriteLine($"     Posição: ({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
+                        Console.WriteLine($"     Último heartbeat: {(DateTime.Now - player.LastHeartbeat).TotalSeconds:F1}s atrás");
+                    }
+                }
+                
+                Console.ResetColor();
+                Console.WriteLine();
             }
         }
 
@@ -93,7 +113,14 @@ namespace RustlikeServer.Core
             int id = _nextPlayerId++;
             Player player = new Player(id, name);
             _players[id] = player;
-            Console.WriteLine($"[GameServer] Player criado: {name} (ID: {id})");
+            
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"\n✅ [GameServer] NOVO PLAYER CRIADO:");
+            Console.WriteLine($"   → Nome: {name}");
+            Console.WriteLine($"   → ID: {id}");
+            Console.WriteLine($"   → Total de jogadores: {_players.Count}");
+            Console.ResetColor();
+            
             return player;
         }
 
@@ -103,7 +130,13 @@ namespace RustlikeServer.Core
             {
                 var playerName = _players[playerId].Name;
                 _players.Remove(playerId);
-                Console.WriteLine($"[GameServer] Player removido: {playerName} (ID: {playerId})");
+                
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"\n❌ [GameServer] PLAYER REMOVIDO:");
+                Console.WriteLine($"   → Nome: {playerName}");
+                Console.WriteLine($"   → ID: {playerId}");
+                Console.WriteLine($"   → Jogadores restantes: {_players.Count}");
+                Console.ResetColor();
                 
                 if (_clients.ContainsKey(playerId))
                 {
@@ -118,7 +151,9 @@ namespace RustlikeServer.Core
         public void RegisterClient(int playerId, ClientHandler handler)
         {
             _clients[playerId] = handler;
+            Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"[GameServer] ClientHandler registrado para Player ID: {playerId} | Total de clients: {_clients.Count}");
+            Console.ResetColor();
         }
 
         public void BroadcastPlayerSpawn(Player player)
@@ -165,9 +200,11 @@ namespace RustlikeServer.Core
             var newPlayerId = newClient.GetPlayer()?.Id ?? -1;
             int count = 0;
 
-            Console.WriteLine($"[GameServer] ========== ENVIANDO PLAYERS EXISTENTES ==========");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"\n[GameServer] ========== ENVIANDO PLAYERS EXISTENTES ==========");
             Console.WriteLine($"[GameServer] Novo player ID: {newPlayerId}");
             Console.WriteLine($"[GameServer] Total de players no servidor: {_players.Count}");
+            Console.ResetColor();
 
             foreach (var player in _players.Values)
             {
@@ -179,7 +216,9 @@ namespace RustlikeServer.Core
                     continue;
                 }
 
-                Console.WriteLine($"[GameServer]   → Enviando spawn de {player.Name} para novo player...");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[GameServer]   → ✅ Enviando spawn de {player.Name} para novo player...");
+                Console.ResetColor();
 
                 var spawnPacket = new PlayerSpawnPacket
                 {
@@ -191,23 +230,29 @@ namespace RustlikeServer.Core
                 };
 
                 byte[] data = spawnPacket.Serialize();
-                Console.WriteLine($"[GameServer]   → Dados serializados: {data.Length} bytes");
-                Console.WriteLine($"[GameServer]   → PlayerID={player.Id}, Name={player.Name}, Pos=({player.Position.X}, {player.Position.Y}, {player.Position.Z})");
+                Console.WriteLine($"[GameServer]      Dados: {data.Length} bytes | Pos=({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
 
                 try
                 {
                     await newClient.SendPacket(PacketType.PlayerSpawn, data);
-                    Console.WriteLine($"[GameServer]   → ✅ Pacote PlayerSpawn ENVIADO com sucesso!");
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"[GameServer]      ✅ ENVIADO COM SUCESSO!");
+                    Console.ResetColor();
                     count++;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[GameServer]   → ❌ ERRO ao enviar: {ex.Message}");
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"[GameServer]      ❌ ERRO: {ex.Message}");
+                    Console.ResetColor();
                 }
             }
 
+            Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"[GameServer] ========== FIM DO ENVIO ==========");
             Console.WriteLine($"[GameServer] Total de players enviados: {count}");
+            Console.ResetColor();
+            Console.WriteLine();
         }
 
         private async void BroadcastToAll(PacketType type, byte[] data, int excludePlayerId = -1)

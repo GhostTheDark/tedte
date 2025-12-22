@@ -84,15 +84,20 @@ namespace RustlikeServer.Core
         private async Task HandleConnectionRequest(byte[] data)
         {
             var request = ConnectionRequestPacket.Deserialize(data);
-            Console.WriteLine($"[ClientHandler] Requisição de conexão de: {request.PlayerName}");
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"\n[ClientHandler] ===== NOVA CONEXÃO =====");
+            Console.WriteLine($"[ClientHandler] Nome: {request.PlayerName}");
+            Console.ResetColor();
 
-            // Cria o jogador no servidor
+            // 1. Cria o jogador no servidor
             _player = _server.CreatePlayer(request.PlayerName);
+            Console.WriteLine($"[ClientHandler] Player criado com ID: {_player.Id}");
 
-            // Registra este ClientHandler no servidor
+            // 2. Registra este ClientHandler no servidor
             _server.RegisterClient(_player.Id, this);
+            Console.WriteLine($"[ClientHandler] ClientHandler registrado");
 
-            // Envia resposta de aceitação
+            // 3. Envia resposta de aceitação
             var response = new ConnectionAcceptPacket
             {
                 PlayerId = _player.Id,
@@ -102,22 +107,35 @@ namespace RustlikeServer.Core
             };
 
             await SendPacket(PacketType.ConnectionAccept, response.Serialize());
-            Console.WriteLine($"[ClientHandler] Jogador {_player.Name} (ID: {_player.Id}) conectado e spawned");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[ClientHandler] ✅ ConnectionAccept ENVIADO para {_player.Name} (ID: {_player.Id})");
+            Console.ResetColor();
 
-            // ⭐ CORREÇÃO CRÍTICA: Aguarda o cliente processar o ConnectionAccept e pausar o processamento
-            Console.WriteLine($"[ClientHandler] Aguardando 100ms para cliente pausar processamento...");
-            await Task.Delay(100);
+            // ⭐⭐⭐ CRÍTICO: AGUARDA o cliente pausar o processamento ⭐⭐⭐
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"[ClientHandler] ⏳ Aguardando 200ms para cliente pausar processamento...");
+            Console.ResetColor();
+            await Task.Delay(200); // ⭐ AUMENTADO para 200ms
 
-            // Envia informações de jogadores existentes para o novo jogador
-            Console.WriteLine($"[ClientHandler] Enviando players existentes...");
+            // 4. Envia informações de jogadores existentes
+            Console.ForegroundColor = ConsoleColor.Magenta;
+            Console.WriteLine($"[ClientHandler] 📤 Enviando players existentes para {_player.Name}...");
+            Console.ResetColor();
             await _server.SendExistingPlayersTo(this);
 
-            // Aguarda mais um pouco para garantir que os spawns foram enviados
-            await Task.Delay(50);
+            // ⭐ Delay adicional para garantir que todos os spawns foram enviados
+            await Task.Delay(100);
 
-            // Notifica outros jogadores sobre o novo jogador
-            Console.WriteLine($"[ClientHandler] Broadcasting spawn do novo jogador...");
+            // 5. Notifica outros jogadores sobre o novo jogador
+            Console.ForegroundColor = ConsoleColor.Blue;
+            Console.WriteLine($"[ClientHandler] 📢 Broadcasting spawn de {_player.Name} para outros jogadores...");
+            Console.ResetColor();
             _server.BroadcastPlayerSpawn(_player);
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[ClientHandler] ✅✅✅ CONEXÃO COMPLETA: {_player.Name} (ID: {_player.Id})");
+            Console.ResetColor();
+            Console.WriteLine();
         }
 
         private void HandlePlayerMovement(byte[] data)
@@ -155,7 +173,9 @@ namespace RustlikeServer.Core
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ClientHandler] Erro ao enviar pacote: {ex.Message}");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[ClientHandler] ❌ Erro ao enviar pacote: {ex.Message}");
+                Console.ResetColor();
             }
         }
 
@@ -167,7 +187,9 @@ namespace RustlikeServer.Core
 
             if (_player != null)
             {
-                Console.WriteLine($"[ClientHandler] Jogador {_player.Name} (ID: {_player.Id}) desconectado");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"\n[ClientHandler] ❌ Jogador {_player.Name} (ID: {_player.Id}) desconectado");
+                Console.ResetColor();
                 _server.RemovePlayer(_player.Id);
             }
 
