@@ -13,6 +13,7 @@ namespace RustlikeServer.Core
         private GameServer _server;
         private Player _player;
         private bool _isRunning;
+        private bool _isFullyLoaded = false; // ⭐ NOVO: Flag para saber se cliente carregou
 
         public ClientHandler(TcpClient client, GameServer server)
         {
@@ -67,6 +68,10 @@ namespace RustlikeServer.Core
                     await HandleConnectionRequest(packet.Data);
                     break;
 
+                case PacketType.ClientReady: // ⭐ NOVO: Cliente avisa quando está pronto
+                    await HandleClientReady();
+                    break;
+
                 case PacketType.PlayerMovement:
                     HandlePlayerMovement(packet.Data);
                     break;
@@ -97,7 +102,7 @@ namespace RustlikeServer.Core
             _server.RegisterClient(_player.Id, this);
             Console.WriteLine($"[ClientHandler] ClientHandler registrado");
 
-            // 3. Envia resposta de aceitação
+            // 3. Envia resposta de aceitação (apenas ID e posição de spawn)
             var response = new ConnectionAcceptPacket
             {
                 PlayerId = _player.Id,
@@ -109,31 +114,42 @@ namespace RustlikeServer.Core
             await SendPacket(PacketType.ConnectionAccept, response.Serialize());
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"[ClientHandler] ✅ ConnectionAccept ENVIADO para {_player.Name} (ID: {_player.Id})");
+            Console.WriteLine($"[ClientHandler] ⏳ AGUARDANDO ClientReady do cliente...");
             Console.ResetColor();
 
-            // ⭐⭐⭐ CRÍTICO: AGUARDA o cliente pausar o processamento ⭐⭐⭐
+            // ⭐ IMPORTANTE: NÃO envia nada aqui! Espera o ClientReady
+        }
+
+        // ⭐ NOVO: Chamado quando cliente avisa que está 100% pronto
+        private async Task HandleClientReady()
+        {
+            _isFullyLoaded = true;
+
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine($"[ClientHandler] ⏳ Aguardando 200ms para cliente pausar processamento...");
+            Console.WriteLine($"\n[ClientHandler] 📢 CLIENT READY RECEBIDO de {_player.Name} (ID: {_player.Id})");
+            Console.WriteLine($"[ClientHandler] Cliente carregou completamente! Iniciando sincronização...");
             Console.ResetColor();
-            await Task.Delay(200); // ⭐ AUMENTADO para 200ms
 
-            // 4. Envia informações de jogadores existentes
+            // Pequeno delay para estabilização
+            await Task.Delay(150);
+
+            // 1. Envia jogadores existentes
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine($"[ClientHandler] 📤 Enviando players existentes para {_player.Name}...");
             Console.ResetColor();
             await _server.SendExistingPlayersTo(this);
 
-            // ⭐ Delay adicional para garantir que todos os spawns foram enviados
-            await Task.Delay(100);
+            // 2. Delay entre envio de spawns e broadcast
+            await Task.Delay(300);
 
-            // 5. Notifica outros jogadores sobre o novo jogador
+            // 3. Notifica outros jogadores sobre o novo jogador
             Console.ForegroundColor = ConsoleColor.Blue;
             Console.WriteLine($"[ClientHandler] 📢 Broadcasting spawn de {_player.Name} para outros jogadores...");
             Console.ResetColor();
             _server.BroadcastPlayerSpawn(_player);
 
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"[ClientHandler] ✅✅✅ CONEXÃO COMPLETA: {_player.Name} (ID: {_player.Id})");
+            Console.WriteLine($"[ClientHandler] ✅✅✅ SINCRONIZAÇÃO COMPLETA: {_player.Name} (ID: {_player.Id})");
             Console.ResetColor();
             Console.WriteLine();
         }
@@ -199,5 +215,6 @@ namespace RustlikeServer.Core
 
         public Player GetPlayer() => _player;
         public bool IsConnected() => _isRunning && _client.Connected;
+        public bool IsFullyLoaded() => _isFullyLoaded;
     }
 }

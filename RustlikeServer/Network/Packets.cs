@@ -12,7 +12,8 @@ namespace RustlikeServer.Network
         PlayerMovement = 3,
         PlayerDisconnect = 4,
         WorldState = 5,
-        Heartbeat = 6
+        Heartbeat = 6,
+        ClientReady = 7  // ⭐ NOVO: Cliente avisa que está pronto
     }
 
     // Classe base para serialização de pacotes

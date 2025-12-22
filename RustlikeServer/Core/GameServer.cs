@@ -17,6 +17,7 @@ namespace RustlikeServer.Core
         private int _nextPlayerId;
         private bool _isRunning;
         private readonly int _port;
+        private readonly object _playersLock = new object(); // ⭐ NOVO: Lock para thread safety
 
         public GameServer(int port = 7777)
         {
@@ -76,7 +77,11 @@ namespace RustlikeServer.Core
             {
                 await Task.Delay(5000);
 
-                var timedOutPlayers = _players.Values.Where(p => p.IsTimedOut()).ToList();
+                List<Player> timedOutPlayers;
+                lock (_playersLock)
+                {
+                    timedOutPlayers = _players.Values.Where(p => p.IsTimedOut()).ToList();
+                }
                 
                 foreach (var player in timedOutPlayers)
                 {
@@ -84,27 +89,30 @@ namespace RustlikeServer.Core
                     RemovePlayer(player.Id);
                 }
 
-                // ⭐ VISUAL MELHORADO - Mostra jogadores online com mais destaque
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"\n╔════════════════════════════════════════════════╗");
-                Console.WriteLine($"║  JOGADORES ONLINE: {_players.Count,-2}                         ║");
-                Console.WriteLine($"║  CLIENTS CONECTADOS: {_clients.Count,-2}                      ║");
-                Console.WriteLine($"╚════════════════════════════════════════════════╝");
-                
-                if (_players.Count > 0)
+                // Status visual
+                lock (_playersLock)
                 {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("\n→ Lista de Jogadores:");
-                    foreach (var player in _players.Values)
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine($"\n╔════════════════════════════════════════════════╗");
+                    Console.WriteLine($"║  JOGADORES ONLINE: {_players.Count,-2}                         ║");
+                    Console.WriteLine($"║  CLIENTS CONECTADOS: {_clients.Count,-2}                      ║");
+                    Console.WriteLine($"╚════════════════════════════════════════════════╝");
+                    
+                    if (_players.Count > 0)
                     {
-                        Console.WriteLine($"   • ID {player.Id}: {player.Name}");
-                        Console.WriteLine($"     Posição: ({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
-                        Console.WriteLine($"     Último heartbeat: {(DateTime.Now - player.LastHeartbeat).TotalSeconds:F1}s atrás");
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine("\n→ Lista de Jogadores:");
+                        foreach (var player in _players.Values)
+                        {
+                            Console.WriteLine($"   • ID {player.Id}: {player.Name}");
+                            Console.WriteLine($"     Posição: ({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
+                            Console.WriteLine($"     Último heartbeat: {(DateTime.Now - player.LastHeartbeat).TotalSeconds:F1}s atrás");
+                        }
                     }
+                    
+                    Console.ResetColor();
+                    Console.WriteLine();
                 }
-                
-                Console.ResetColor();
-                Console.WriteLine();
             }
         }
 
@@ -112,7 +120,11 @@ namespace RustlikeServer.Core
         {
             int id = _nextPlayerId++;
             Player player = new Player(id, name);
-            _players[id] = player;
+            
+            lock (_playersLock)
+            {
+                _players[id] = player;
+            }
             
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"\n✅ [GameServer] NOVO PLAYER CRIADO:");
@@ -126,11 +138,21 @@ namespace RustlikeServer.Core
 
         public void RemovePlayer(int playerId)
         {
-            if (_players.ContainsKey(playerId))
+            string playerName = "";
+            bool removed = false;
+
+            lock (_playersLock)
             {
-                var playerName = _players[playerId].Name;
-                _players.Remove(playerId);
-                
+                if (_players.ContainsKey(playerId))
+                {
+                    playerName = _players[playerId].Name;
+                    _players.Remove(playerId);
+                    removed = true;
+                }
+            }
+
+            if (removed)
+            {
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"\n❌ [GameServer] PLAYER REMOVIDO:");
                 Console.WriteLine($"   → Nome: {playerName}");
@@ -203,10 +225,18 @@ namespace RustlikeServer.Core
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"\n[GameServer] ========== ENVIANDO PLAYERS EXISTENTES ==========");
             Console.WriteLine($"[GameServer] Novo player ID: {newPlayerId}");
-            Console.WriteLine($"[GameServer] Total de players no servidor: {_players.Count}");
             Console.ResetColor();
 
-            foreach (var player in _players.Values)
+            // ⭐ CRITICAL: Cria snapshot dos players para evitar problemas de concorrência
+            List<Player> playersSnapshot;
+            lock (_playersLock)
+            {
+                playersSnapshot = _players.Values.ToList();
+                Console.WriteLine($"[GameServer] Total de players no servidor: {playersSnapshot.Count}");
+            }
+
+            // Itera sobre o snapshot
+            foreach (var player in playersSnapshot)
             {
                 Console.WriteLine($"[GameServer] Verificando player: {player.Name} (ID: {player.Id})");
                 
@@ -235,6 +265,10 @@ namespace RustlikeServer.Core
                 try
                 {
                     await newClient.SendPacket(PacketType.PlayerSpawn, data);
+                    
+                    // ⭐ IMPORTANTE: Delay entre cada spawn
+                    await Task.Delay(50);
+                    
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"[GameServer]      ✅ ENVIADO COM SUCESSO!");
                     Console.ResetColor();
