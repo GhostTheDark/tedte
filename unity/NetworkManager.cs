@@ -20,7 +20,7 @@ namespace RustlikeClient.Network
         private Dictionary<int, GameObject> _otherPlayers = new Dictionary<int, GameObject>();
         
         [Header("Settings")]
-        public float movementSendRate = 0.05f;
+        public float movementSendRate = 0.1f; // ⭐ AUMENTADO: De 0.05 para 0.1 (menos pacotes!)
         private float _lastMovementSend;
 
         private Vector3 _pendingSpawnPosition;
@@ -51,7 +51,6 @@ namespace RustlikeClient.Network
             Debug.Log($"[NetworkManager] ===== INICIANDO CONEXÃO =====");
             Debug.Log($"[NetworkManager] IP: {ip}, Port: {port}, Nome: {playerName}");
             
-            // Mostra loading
             if (UI.LoadingScreen.Instance != null)
             {
                 UI.LoadingScreen.Instance.Show();
@@ -105,6 +104,20 @@ namespace RustlikeClient.Network
                 case PacketType.PlayerDisconnect:
                     HandlePlayerDisconnect(packet.Data);
                     break;
+
+                // ⭐ NOVOS: Sistema de Stats
+                case PacketType.StatsUpdate:
+                    HandleStatsUpdate(packet.Data);
+                    break;
+
+                case PacketType.PlayerDeath:
+                    HandlePlayerDeath(packet.Data);
+                    break;
+
+                // ⭐ NOVOS: Sistema de Inventário
+                case PacketType.InventoryUpdate:
+                    HandleInventoryUpdate(packet.Data);
+                    break;
                     
                 default:
                     Debug.LogWarning($"[NetworkManager] Tipo de pacote desconhecido: {packet.Type}");
@@ -133,7 +146,6 @@ namespace RustlikeClient.Network
                 UI.LoadingScreen.Instance.SetProgress(0.5f, "Carregando mundo...");
             }
 
-            // Carrega cena e spawna player
             SceneManager.LoadScene("Gameplay");
             StartCoroutine(CompleteLoadingSequence());
         }
@@ -142,7 +154,6 @@ namespace RustlikeClient.Network
         {
             Debug.Log("[NetworkManager] ========== INICIANDO SEQUÊNCIA DE LOADING ==========");
             
-            // Aguarda cena carregar
             yield return new WaitForSeconds(0.3f);
 
             if (UI.LoadingScreen.Instance != null)
@@ -152,7 +163,6 @@ namespace RustlikeClient.Network
 
             yield return new WaitForSeconds(0.2f);
 
-            // ========== SPAWNA PLAYER LOCAL ==========
             Debug.Log("[NetworkManager] ========== SPAWNING LOCAL PLAYER ==========");
             
             if (playerPrefab == null)
@@ -161,38 +171,34 @@ namespace RustlikeClient.Network
                 yield break;
             }
 
-            if (otherPlayerPrefab == null)
-            {
-                Debug.LogError("[NetworkManager] ❌ ERRO CRÍTICO: otherPlayerPrefab não está configurado!");
-            }
-
             _myPlayer = Instantiate(playerPrefab, _pendingSpawnPosition, Quaternion.identity);
             _myPlayer.name = $"LocalPlayer_{_myPlayerId}";
             
+            // Adiciona componente de stats se não existir
+            if (_myPlayer.GetComponent<Player.PlayerStatsClient>() == null)
+            {
+                _myPlayer.AddComponent<Player.PlayerStatsClient>();
+            }
+            
             Debug.Log($"[NetworkManager] ✅ Player local spawned: {_myPlayer.name}");
-            Debug.Log($"[NetworkManager] Posição: {_myPlayer.transform.position}");
 
             if (UI.LoadingScreen.Instance != null)
             {
                 UI.LoadingScreen.Instance.SetProgress(0.8f, "Sincronizando jogadores...");
             }
 
-            // Aguarda tudo estabilizar
             yield return new WaitForSeconds(0.5f);
 
-            // ========== AVISA O SERVIDOR QUE ESTÁ PRONTO ==========
             Debug.Log("[NetworkManager] 📢 ENVIANDO CLIENT READY PARA SERVIDOR");
-            SendClientReadyAsync(); // ⭐ Chama método async separado
+            SendClientReadyAsync();
 
             if (UI.LoadingScreen.Instance != null)
             {
                 UI.LoadingScreen.Instance.SetProgress(0.9f, "Aguardando sincronização...");
             }
 
-            // Aguarda um pouco para receber os spawns
             yield return new WaitForSeconds(1.0f);
 
-            // Completa loading
             if (UI.LoadingScreen.Instance != null)
             {
                 UI.LoadingScreen.Instance.SetProgress(1f, "Pronto!");
@@ -200,19 +206,36 @@ namespace RustlikeClient.Network
                 UI.LoadingScreen.Instance.Hide();
             }
 
-            Debug.Log($"[NetworkManager] ========== LOADING COMPLETO ==========");
-            Debug.Log($"[NetworkManager] Jogadores carregados: {_otherPlayers.Count}");
-
-            // Lista todos os players
-            foreach (var kvp in _otherPlayers)
+            // ⭐ NOVO: Mostra a UI de stats
+            if (UI.StatsUI.Instance != null)
             {
-                Debug.Log($"  → Player ID {kvp.Key}: {kvp.Value.name} na posição {kvp.Value.transform.position}");
+                UI.StatsUI.Instance.Show();
             }
+
+            Debug.Log($"[NetworkManager] ========== LOADING COMPLETO ==========");
 
             StartCoroutine(SendHeartbeat());
         }
 
-        // ⭐ NOVO: Método async separado para enviar ClientReady
+        // ⭐ NOVO: Processa atualização de inventário
+        private void HandleInventoryUpdate(byte[] data)
+        {
+            Debug.Log("[NetworkManager] ========== INVENTORY UPDATE ==========");
+            
+            var inventoryPacket = InventoryUpdatePacket.Deserialize(data);
+            Debug.Log($"[NetworkManager] Recebido inventário com {inventoryPacket.Slots.Count} itens");
+
+            // Atualiza InventoryManager
+            if (UI.InventoryManager.Instance != null)
+            {
+                UI.InventoryManager.Instance.UpdateInventory(inventoryPacket);
+            }
+            else
+            {
+                Debug.LogError("[NetworkManager] InventoryManager não encontrado!");
+            }
+        }
+
         private async void SendClientReadyAsync()
         {
             await _networking.SendPacketAsync(PacketType.ClientReady, new byte[0]);
@@ -228,17 +251,11 @@ namespace RustlikeClient.Network
             Debug.Log($"  - PlayerID: {spawn.PlayerId}");
             Debug.Log($"  - PlayerName: {spawn.PlayerName}");
             Debug.Log($"  - Position: {spawn.Position}");
-            Debug.Log($"  - Meu ID: {_myPlayerId}");
             
             if (spawn.PlayerId == _myPlayerId)
             {
                 Debug.Log($"[NetworkManager] ⏭️ Ignorando spawn do próprio player");
                 return;
-            }
-
-            if (_myPlayer == null)
-            {
-                Debug.LogError($"[NetworkManager] ❌ ERRO: _myPlayer é NULL! Spawn pode falhar.");
             }
 
             SpawnOtherPlayer(spawn);
@@ -248,37 +265,25 @@ namespace RustlikeClient.Network
         {
             Debug.Log($"[NetworkManager] ========== SPAWN OTHER PLAYER ==========");
             Debug.Log($"[NetworkManager] Tentando spawnar: {spawn.PlayerName} (ID: {spawn.PlayerId})");
-            Debug.Log($"[NetworkManager] Position: {spawn.Position}");
 
             if (_otherPlayers.ContainsKey(spawn.PlayerId))
             {
-                Debug.LogWarning($"[NetworkManager] ⚠️ Jogador {spawn.PlayerId} JÁ EXISTE! Ignorando spawn duplicado.");
+                Debug.LogWarning($"[NetworkManager] ⚠️ Jogador {spawn.PlayerId} JÁ EXISTE!");
                 return;
             }
 
             if (otherPlayerPrefab == null)
             {
-                Debug.LogError($"[NetworkManager] ❌ ERRO CRÍTICO: otherPlayerPrefab é NULL!");
+                Debug.LogError($"[NetworkManager] ❌ ERRO: otherPlayerPrefab é NULL!");
                 return;
             }
 
-            Debug.Log($"[NetworkManager] Instantiando prefab...");
             GameObject otherPlayer = Instantiate(otherPlayerPrefab, spawn.Position, Quaternion.identity);
             otherPlayer.name = $"Player_{spawn.PlayerId}_{spawn.PlayerName}";
             
             _otherPlayers[spawn.PlayerId] = otherPlayer;
 
-            Debug.Log($"[NetworkManager] ✅✅✅ SUCESSO! Jogador spawned:");
-            Debug.Log($"  - Nome no Unity: {otherPlayer.name}");
-            Debug.Log($"  - Posição: {otherPlayer.transform.position}");
-            Debug.Log($"  - Ativo? {otherPlayer.activeSelf}");
-            Debug.Log($"  - Total de outros jogadores agora: {_otherPlayers.Count}");
-
-            // Lista todos os players atuais
-            foreach (var kvp in _otherPlayers)
-            {
-                Debug.Log($"    → Player ID {kvp.Key}: {kvp.Value.name} (ativo: {kvp.Value.activeSelf})");
-            }
+            Debug.Log($"[NetworkManager] ✅ Jogador spawned: {otherPlayer.name}");
         }
 
         private void HandlePlayerMovement(byte[] data)
@@ -289,14 +294,99 @@ namespace RustlikeClient.Network
 
             if (_otherPlayers.TryGetValue(movement.PlayerId, out GameObject otherPlayer))
             {
-                otherPlayer.transform.position = Vector3.Lerp(
-                    otherPlayer.transform.position, 
-                    movement.Position, 
-                    Time.deltaTime * 10f
-                );
-
-                otherPlayer.transform.rotation = Quaternion.Euler(0, movement.Rotation.x, 0);
+                // ⭐ OTIMIZADO: Interpolação mais suave
+                var networkSync = otherPlayer.GetComponent<NetworkPlayerSync>();
+                if (networkSync == null)
+                {
+                    networkSync = otherPlayer.AddComponent<NetworkPlayerSync>();
+                }
+                
+                networkSync.UpdateTargetTransform(movement.Position, movement.Rotation.x);
             }
+        }
+
+        // ⭐ NOVO: Atualiza stats na UI e no PlayerStatsClient
+        private void HandleStatsUpdate(byte[] data)
+        {
+            var stats = StatsUpdatePacket.Deserialize(data);
+            
+            if (stats.PlayerId != _myPlayerId) return;
+
+            Debug.Log($"[NetworkManager] Stats Update: HP={stats.Health:F0} Hunger={stats.Hunger:F0} Thirst={stats.Thirst:F0} Temp={stats.Temperature:F0}");
+
+            // Atualiza componente do player
+            if (_myPlayer != null)
+            {
+                var playerStats = _myPlayer.GetComponent<Player.PlayerStatsClient>();
+                if (playerStats != null)
+                {
+                    playerStats.UpdateStats(stats.Health, stats.Hunger, stats.Thirst, stats.Temperature);
+                }
+            }
+
+            // Atualiza UI
+            if (UI.StatsUI.Instance != null)
+            {
+                UI.StatsUI.Instance.UpdateStats(stats.Health, stats.Hunger, stats.Thirst, stats.Temperature);
+            }
+        }
+
+        // ⭐ NOVO: Processa morte de jogador
+        private void HandlePlayerDeath(byte[] data)
+        {
+            var death = PlayerDeathPacket.Deserialize(data);
+            
+            Debug.Log($"[NetworkManager] ========== PLAYER DEATH ==========");
+            Debug.Log($"[NetworkManager] Player ID: {death.PlayerId}");
+            Debug.Log($"[NetworkManager] Killer: {(string.IsNullOrEmpty(death.KillerName) ? "Ambiente" : death.KillerName)}");
+
+            if (death.PlayerId == _myPlayerId)
+            {
+                // Eu morri!
+                Debug.LogWarning("[NetworkManager] 💀 VOCÊ MORREU!");
+                HandleMyDeath();
+            }
+            else
+            {
+                // Outro jogador morreu
+                if (_otherPlayers.TryGetValue(death.PlayerId, out GameObject player))
+                {
+                    Debug.Log($"[NetworkManager] Jogador {player.name} morreu");
+                    // Aqui você pode adicionar animação de morte, ragdoll, etc.
+                }
+            }
+        }
+
+        private void HandleMyDeath()
+        {
+            // Desabilita controles
+            if (_myPlayer != null)
+            {
+                var controller = _myPlayer.GetComponent<Player.PlayerController>();
+                if (controller != null)
+                {
+                    controller.enabled = false;
+                }
+            }
+
+            // Mostra tela de morte (você criará isso depois)
+            Debug.Log("[NetworkManager] Mostrando tela de morte...");
+            
+            // Por enquanto, respawn automático após 5 segundos
+            StartCoroutine(AutoRespawn());
+        }
+
+        private IEnumerator AutoRespawn()
+        {
+            yield return new WaitForSeconds(5f);
+            
+            Debug.Log("[NetworkManager] Solicitando respawn...");
+            SendRespawnAsync();
+        }
+
+        private async void SendRespawnAsync()
+        {
+            await _networking.SendPacketAsync(PacketType.PlayerRespawn, new byte[0]);
         }
 
         private void HandlePlayerDisconnect(byte[] data)
@@ -311,7 +401,6 @@ namespace RustlikeClient.Network
                 Debug.Log($"[NetworkManager] Destruindo player {player.name}");
                 Destroy(player);
                 _otherPlayers.Remove(playerId);
-                Debug.Log($"[NetworkManager] Total de outros jogadores restantes: {_otherPlayers.Count}");
             }
         }
 
@@ -332,6 +421,11 @@ namespace RustlikeClient.Network
                 UI.LoadingScreen.Instance.Hide();
             }
 
+            if (UI.StatsUI.Instance != null)
+            {
+                UI.StatsUI.Instance.Hide();
+            }
+
             SceneManager.LoadScene("MainMenu");
         }
 
@@ -349,10 +443,11 @@ namespace RustlikeClient.Network
                 Rotation = rotation
             };
 
-            SendMovementAsync(movement);
+            // ⭐ OTIMIZADO: Envia de forma assíncrona sem bloquear
+            _ = SendMovementAsync(movement);
         }
 
-        private async void SendMovementAsync(PlayerMovementPacket movement)
+        private async System.Threading.Tasks.Task SendMovementAsync(PlayerMovementPacket movement)
         {
             await _networking.SendPacketAsync(PacketType.PlayerMovement, movement.Serialize());
         }
@@ -375,34 +470,22 @@ namespace RustlikeClient.Network
         public bool IsConnected() => _networking.IsConnected();
         public int GetOtherPlayersCount() => _otherPlayers.Count;
 
+        // ⭐ NOVO: Envia pacote genérico (para InventoryManager usar)
+        public async System.Threading.Tasks.Task SendPacketAsync(PacketType type, byte[] data)
+        {
+            await _networking.SendPacketAsync(type, data);
+        }
+
         private void Update()
         {
-            // F1 para ver status detalhado
+            // F1 para ver status
             if (Input.GetKeyDown(KeyCode.F1))
             {
                 Debug.Log("========================================");
                 Debug.Log("========== NETWORK STATUS ==========");
-                Debug.Log("========================================");
                 Debug.Log($"My Player ID: {_myPlayerId}");
-                Debug.Log($"My Player Object: {(_myPlayer != null ? _myPlayer.name : "NULL")}");
-                Debug.Log($"Other Players Count: {_otherPlayers.Count}");
                 Debug.Log($"Connected: {IsConnected()}");
-                Debug.Log("----------------------------------------");
-                Debug.Log("Other Players List:");
-                if (_otherPlayers.Count == 0)
-                {
-                    Debug.Log("  (nenhum outro jogador)");
-                }
-                else
-                {
-                    foreach (var kvp in _otherPlayers)
-                    {
-                        var player = kvp.Value;
-                        Debug.Log($"  - ID {kvp.Key}: {player.name}");
-                        Debug.Log($"    Position: {player.transform.position}");
-                        Debug.Log($"    Active: {player.activeSelf}");
-                    }
-                }
+                Debug.Log($"Other Players: {_otherPlayers.Count}");
                 Debug.Log("========================================");
             }
         }

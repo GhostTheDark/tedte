@@ -9,8 +9,19 @@ namespace RustlikeClient.Player
         private CameraController _camera;
 
         [Header("Network Sync")]
-        public float networkSyncRate = 0.1f; // Sincroniza a cada 100ms
+        [Tooltip("Taxa de envio de pacotes de movimento (em segundos)")]
+        public float networkSyncRate = 0.1f; // ⭐ 10 pacotes por segundo (era 20!)
         private float _lastNetworkSync;
+
+        [Header("Optimization")]
+        [Tooltip("Distância mínima de movimento para enviar pacote")]
+        public float minMovementThreshold = 0.01f; // Só envia se moveu mais que 1cm
+        
+        [Tooltip("Ângulo mínimo de rotação para enviar pacote")]
+        public float minRotationThreshold = 1f; // Só envia se girou mais que 1 grau
+
+        private Vector3 _lastSentPosition;
+        private Vector2 _lastSentRotation;
 
         private void Awake()
         {
@@ -26,6 +37,9 @@ namespace RustlikeClient.Player
             {
                 Debug.LogError("[PlayerController] CameraController não encontrado!");
             }
+
+            _lastSentPosition = transform.position;
+            _lastSentRotation = Vector2.zero;
         }
 
         private void Update()
@@ -39,18 +53,62 @@ namespace RustlikeClient.Player
             if (Network.NetworkManager.Instance == null) return;
             if (!Network.NetworkManager.Instance.IsConnected()) return;
 
-            _lastNetworkSync = Time.time;
-
-            // Envia posição e rotação para o servidor
             Vector3 position = _movement.GetPosition();
             Vector2 rotation = _camera.GetRotation();
 
-            Network.NetworkManager.Instance.SendPlayerMovement(position, rotation);
+            // ⭐ OTIMIZAÇÃO: Só envia se houve mudança significativa
+            if (HasMovedSignificantly(position, rotation))
+            {
+                _lastNetworkSync = Time.time;
+                _lastSentPosition = position;
+                _lastSentRotation = rotation;
+
+                Network.NetworkManager.Instance.SendPlayerMovement(position, rotation);
+            }
+        }
+
+        private bool HasMovedSignificantly(Vector3 currentPos, Vector2 currentRot)
+        {
+            // Verifica se moveu mais que o threshold
+            float positionDelta = Vector3.Distance(currentPos, _lastSentPosition);
+            if (positionDelta > minMovementThreshold)
+            {
+                return true;
+            }
+
+            // Verifica se girou mais que o threshold
+            float yawDelta = Mathf.Abs(Mathf.DeltaAngle(currentRot.x, _lastSentRotation.x));
+            float pitchDelta = Mathf.Abs(Mathf.DeltaAngle(currentRot.y, _lastSentRotation.y));
+            
+            if (yawDelta > minRotationThreshold || pitchDelta > minRotationThreshold)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         // Métodos públicos para debug/info
         public Vector3 GetPosition() => _movement.GetPosition();
         public bool IsGrounded() => _movement.IsGrounded();
         public float GetSpeed() => _movement.GetCurrentSpeed();
+
+        /// <summary>
+        /// Para debug - mostra info de rede
+        /// </summary>
+        private void OnGUI()
+        {
+            if (Input.GetKey(KeyCode.F3))
+            {
+                GUI.Box(new Rect(10, 230, 250, 100), "Network Stats (F3)");
+                
+                float timeSinceLastSync = Time.time - _lastNetworkSync;
+                float posDistance = Vector3.Distance(transform.position, _lastSentPosition);
+                
+                GUI.Label(new Rect(20, 255, 230, 20), $"Last sync: {timeSinceLastSync:F2}s ago");
+                GUI.Label(new Rect(20, 275, 230, 20), $"Pos delta: {posDistance:F3}m");
+                GUI.Label(new Rect(20, 295, 230, 20), $"Send rate: {1f/networkSyncRate:F0} pkt/s");
+            }
+        }
     }
 }
