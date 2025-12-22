@@ -11,6 +11,12 @@ namespace RustlikeServer.World
         public DateTime LastHeartbeat { get; set; }
         public bool IsConnected { get; set; }
 
+        // ⭐ NOVO: Sistema de Stats
+        public PlayerStats Stats { get; private set; }
+
+        // ⭐ NOVO: Sistema de Inventário
+        public PlayerInventory Inventory { get; private set; }
+
         public Player(int id, string name)
         {
             Id = id;
@@ -19,6 +25,12 @@ namespace RustlikeServer.World
             Rotation = new Vector2(0, 0);
             LastHeartbeat = DateTime.Now;
             IsConnected = true;
+
+            // ⭐ Inicializa stats
+            Stats = new PlayerStats();
+
+            // ⭐ Inicializa inventário
+            Inventory = new PlayerInventory();
         }
 
         public void UpdatePosition(float x, float y, float z)
@@ -39,6 +51,39 @@ namespace RustlikeServer.World
         public bool IsTimedOut()
         {
             return (DateTime.Now - LastHeartbeat).TotalSeconds > 10;
+        }
+
+        /// <summary>
+        /// Atualiza stats do jogador (chamado pelo servidor periodicamente)
+        /// </summary>
+        public void UpdateStats()
+        {
+            Stats.Update();
+        }
+
+        /// <summary>
+        /// Aplica dano ao jogador
+        /// </summary>
+        public void TakeDamage(float amount, DamageType type = DamageType.Generic)
+        {
+            Stats.TakeDamage(amount, type);
+        }
+
+        /// <summary>
+        /// Verifica se o jogador está morto
+        /// </summary>
+        public bool IsDead()
+        {
+            return Stats.IsDead;
+        }
+
+        /// <summary>
+        /// Respawn do jogador
+        /// </summary>
+        public void Respawn()
+        {
+            Stats.Respawn();
+            Position = new Vector3(0, 1, 0); // Reset position
         }
     }
 

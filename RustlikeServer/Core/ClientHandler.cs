@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using RustlikeServer.Network;
 using RustlikeServer.World;
+using RustlikeServer.Items;
 
 namespace RustlikeServer.Core
 {
@@ -13,7 +14,7 @@ namespace RustlikeServer.Core
         private GameServer _server;
         private Player _player;
         private bool _isRunning;
-        private bool _isFullyLoaded = false; // ⭐ NOVO: Flag para saber se cliente carregou
+        private bool _isFullyLoaded = false;
 
         public ClientHandler(TcpClient client, GameServer server)
         {
@@ -68,7 +69,7 @@ namespace RustlikeServer.Core
                     await HandleConnectionRequest(packet.Data);
                     break;
 
-                case PacketType.ClientReady: // ⭐ NOVO: Cliente avisa quando está pronto
+                case PacketType.ClientReady:
                     await HandleClientReady();
                     break;
 
@@ -83,6 +84,15 @@ namespace RustlikeServer.Core
                 case PacketType.PlayerDisconnect:
                     Disconnect();
                     break;
+
+                // ⭐ NOVOS: Pacotes de inventário
+                case PacketType.ItemUse:
+                    await HandleItemUse(packet.Data);
+                    break;
+
+                case PacketType.ItemMove:
+                    await HandleItemMove(packet.Data);
+                    break;
             }
         }
 
@@ -94,15 +104,12 @@ namespace RustlikeServer.Core
             Console.WriteLine($"[ClientHandler] Nome: {request.PlayerName}");
             Console.ResetColor();
 
-            // 1. Cria o jogador no servidor
             _player = _server.CreatePlayer(request.PlayerName);
             Console.WriteLine($"[ClientHandler] Player criado com ID: {_player.Id}");
 
-            // 2. Registra este ClientHandler no servidor
             _server.RegisterClient(_player.Id, this);
             Console.WriteLine($"[ClientHandler] ClientHandler registrado");
 
-            // 3. Envia resposta de aceitação (apenas ID e posição de spawn)
             var response = new ConnectionAcceptPacket
             {
                 PlayerId = _player.Id,
@@ -116,11 +123,8 @@ namespace RustlikeServer.Core
             Console.WriteLine($"[ClientHandler] ✅ ConnectionAccept ENVIADO para {_player.Name} (ID: {_player.Id})");
             Console.WriteLine($"[ClientHandler] ⏳ AGUARDANDO ClientReady do cliente...");
             Console.ResetColor();
-
-            // ⭐ IMPORTANTE: NÃO envia nada aqui! Espera o ClientReady
         }
 
-        // ⭐ NOVO: Chamado quando cliente avisa que está 100% pronto
         private async Task HandleClientReady()
         {
             _isFullyLoaded = true;
@@ -130,19 +134,18 @@ namespace RustlikeServer.Core
             Console.WriteLine($"[ClientHandler] Cliente carregou completamente! Iniciando sincronização...");
             Console.ResetColor();
 
-            // Pequeno delay para estabilização
             await Task.Delay(150);
 
-            // 1. Envia jogadores existentes
+            // Envia inventário inicial
+            await SendInventoryUpdate();
+
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine($"[ClientHandler] 📤 Enviando players existentes para {_player.Name}...");
             Console.ResetColor();
             await _server.SendExistingPlayersTo(this);
 
-            // 2. Delay entre envio de spawns e broadcast
             await Task.Delay(300);
 
-            // 3. Notifica outros jogadores sobre o novo jogador
             Console.ForegroundColor = ConsoleColor.Blue;
             Console.WriteLine($"[ClientHandler] 📢 Broadcasting spawn de {_player.Name} para outros jogadores...");
             Console.ResetColor();
@@ -160,12 +163,10 @@ namespace RustlikeServer.Core
 
             var movement = PlayerMovementPacket.Deserialize(data);
             
-            // Atualiza posição no servidor (server authoritative)
             _player.UpdatePosition(movement.PosX, movement.PosY, movement.PosZ);
             _player.UpdateRotation(movement.RotX, movement.RotY);
             _player.UpdateHeartbeat();
 
-            // Broadcast para outros jogadores
             _server.BroadcastPlayerMovement(_player, this);
         }
 
@@ -175,6 +176,78 @@ namespace RustlikeServer.Core
             {
                 _player.UpdateHeartbeat();
             }
+        }
+
+        // ⭐ NOVO: Usa item do inventário
+        private async Task HandleItemUse(byte[] data)
+        {
+            if (_player == null) return;
+
+            var packet = ItemUsePacket.Deserialize(data);
+            Console.WriteLine($"[ClientHandler] 🎒 {_player.Name} usou item do slot {packet.SlotIndex}");
+
+            // Consome o item
+            var itemDef = _player.Inventory.ConsumeItem(packet.SlotIndex);
+            if (itemDef == null)
+            {
+                Console.WriteLine($"[ClientHandler] ⚠️ Slot {packet.SlotIndex} vazio ou item não consumível");
+                return;
+            }
+
+            // Aplica efeitos nas stats
+            if (itemDef.HealthRestore > 0)
+                _player.Stats.Heal(itemDef.HealthRestore);
+            
+            if (itemDef.HungerRestore > 0)
+                _player.Stats.Eat(itemDef.HungerRestore);
+            
+            if (itemDef.ThirstRestore > 0)
+                _player.Stats.Drink(itemDef.ThirstRestore);
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[ClientHandler] ✅ Efeitos aplicados: HP+{itemDef.HealthRestore} Hunger+{itemDef.HungerRestore} Thirst+{itemDef.ThirstRestore}");
+            Console.ResetColor();
+
+            // Sincroniza inventário atualizado
+            await SendInventoryUpdate();
+        }
+
+        // ⭐ NOVO: Move item entre slots
+        private async Task HandleItemMove(byte[] data)
+        {
+            if (_player == null) return;
+
+            var packet = ItemMovePacket.Deserialize(data);
+            Console.WriteLine($"[ClientHandler] 🎒 {_player.Name} moveu item: {packet.FromSlot} → {packet.ToSlot}");
+
+            bool success = _player.Inventory.MoveItem(packet.FromSlot, packet.ToSlot);
+            if (success)
+            {
+                await SendInventoryUpdate();
+            }
+        }
+
+        // ⭐ NOVO: Envia inventário completo para o cliente
+        private async Task SendInventoryUpdate()
+        {
+            var inventoryPacket = new InventoryUpdatePacket();
+            var slots = _player.Inventory.GetAllSlots();
+
+            for (int i = 0; i < slots.Length; i++)
+            {
+                if (slots[i] != null)
+                {
+                    inventoryPacket.Slots.Add(new InventorySlotData
+                    {
+                        SlotIndex = i,
+                        ItemId = slots[i].ItemId,
+                        Quantity = slots[i].Quantity
+                    });
+                }
+            }
+
+            await SendPacket(PacketType.InventoryUpdate, inventoryPacket.Serialize());
+            Console.WriteLine($"[ClientHandler] 📦 Inventário sincronizado: {inventoryPacket.Slots.Count} slots com itens");
         }
 
         public async Task SendPacket(PacketType type, byte[] data)

@@ -17,7 +17,11 @@ namespace RustlikeServer.Core
         private int _nextPlayerId;
         private bool _isRunning;
         private readonly int _port;
-        private readonly object _playersLock = new object(); // ⭐ NOVO: Lock para thread safety
+        private readonly object _playersLock = new object();
+
+        // ⭐ NOVO: Configurações de update de stats
+        private const float STATS_UPDATE_RATE = 1f; // Atualiza stats a cada 1 segundo
+        private const float STATS_SYNC_RATE = 2f;   // Sincroniza com clientes a cada 2 segundos
 
         public GameServer(int port = 7777)
         {
@@ -39,14 +43,16 @@ namespace RustlikeServer.Core
                 Console.WriteLine($"╔════════════════════════════════════════════════╗");
                 Console.WriteLine($"║  SERVIDOR RUST-LIKE INICIADO                   ║");
                 Console.WriteLine($"║  Porta: {_port}                                    ║");
+                Console.WriteLine($"║  Sistema de Sobrevivência: ATIVO               ║");
                 Console.WriteLine($"║  Aguardando conexões...                        ║");
                 Console.WriteLine($"╚════════════════════════════════════════════════╝");
                 Console.WriteLine();
 
                 Task acceptTask = AcceptClientsAsync();
                 Task monitorTask = MonitorPlayersAsync();
+                Task statsTask = UpdateStatsLoopAsync(); // ⭐ NOVO: Loop de stats
 
-                await Task.WhenAll(acceptTask, monitorTask);
+                await Task.WhenAll(acceptTask, monitorTask, statsTask);
             }
             catch (Exception ex)
             {
@@ -69,6 +75,107 @@ namespace RustlikeServer.Core
                     Console.WriteLine($"[GameServer] Erro ao aceitar cliente: {ex.Message}");
                 }
             }
+        }
+
+        // ⭐ NOVO: Loop que atualiza stats de todos os jogadores
+        private async Task UpdateStatsLoopAsync()
+        {
+            DateTime lastStatsUpdate = DateTime.Now;
+            DateTime lastStatsSync = DateTime.Now;
+
+            while (_isRunning)
+            {
+                await Task.Delay(100); // Check a cada 100ms
+
+                DateTime now = DateTime.Now;
+
+                // Atualiza stats dos jogadores
+                if ((now - lastStatsUpdate).TotalSeconds >= STATS_UPDATE_RATE)
+                {
+                    lastStatsUpdate = now;
+                    UpdateAllPlayersStats();
+                }
+
+                // Sincroniza stats com clientes
+                if ((now - lastStatsSync).TotalSeconds >= STATS_SYNC_RATE)
+                {
+                    lastStatsSync = now;
+                    SyncAllPlayersStats();
+                }
+            }
+        }
+
+        private void UpdateAllPlayersStats()
+        {
+            List<Player> playersSnapshot;
+            lock (_playersLock)
+            {
+                playersSnapshot = _players.Values.ToList();
+            }
+
+            foreach (var player in playersSnapshot)
+            {
+                player.UpdateStats();
+
+                // Se morreu, notifica e processa morte
+                if (player.IsDead())
+                {
+                    HandlePlayerDeath(player);
+                }
+            }
+        }
+
+        private async void SyncAllPlayersStats()
+        {
+            List<Player> playersSnapshot;
+            lock (_playersLock)
+            {
+                playersSnapshot = _players.Values.ToList();
+            }
+
+            foreach (var player in playersSnapshot)
+            {
+                if (_clients.TryGetValue(player.Id, out var client))
+                {
+                    var statsPacket = new StatsUpdatePacket
+                    {
+                        PlayerId = player.Id,
+                        Health = player.Stats.Health,
+                        Hunger = player.Stats.Hunger,
+                        Thirst = player.Stats.Thirst,
+                        Temperature = player.Stats.Temperature
+                    };
+
+                    await client.SendPacket(PacketType.StatsUpdate, statsPacket.Serialize());
+                }
+            }
+        }
+
+        private void HandlePlayerDeath(Player player)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[GameServer] ☠️  MORTE: {player.Name} (ID: {player.Id})");
+            Console.WriteLine($"[GameServer] Causa: {GetDeathCause(player)}");
+            Console.ResetColor();
+
+            // Broadcast morte para todos
+            var deathPacket = new PlayerDeathPacket
+            {
+                PlayerId = player.Id,
+                KillerName = "" // Por enquanto, apenas morte por ambiente
+            };
+
+            BroadcastToAll(PacketType.PlayerDeath, deathPacket.Serialize());
+        }
+
+        private string GetDeathCause(Player player)
+        {
+            var stats = player.Stats;
+            if (stats.Hunger <= 0) return "Fome";
+            if (stats.Thirst <= 0) return "Sede";
+            if (stats.Temperature < 0) return "Frio Extremo";
+            if (stats.Temperature > 40) return "Calor Extremo";
+            return "Desconhecida";
         }
 
         private async Task MonitorPlayersAsync()
@@ -106,7 +213,8 @@ namespace RustlikeServer.Core
                         {
                             Console.WriteLine($"   • ID {player.Id}: {player.Name}");
                             Console.WriteLine($"     Posição: ({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
-                            Console.WriteLine($"     Último heartbeat: {(DateTime.Now - player.LastHeartbeat).TotalSeconds:F1}s atrás");
+                            Console.WriteLine($"     Stats: {player.Stats}");
+                            Console.WriteLine($"     Status: {(player.IsDead() ? "☠️ MORTO" : "✅ VIVO")}");
                         }
                     }
                     
@@ -130,6 +238,7 @@ namespace RustlikeServer.Core
             Console.WriteLine($"\n✅ [GameServer] NOVO PLAYER CRIADO:");
             Console.WriteLine($"   → Nome: {name}");
             Console.WriteLine($"   → ID: {id}");
+            Console.WriteLine($"   → Stats iniciais: {player.Stats}");
             Console.WriteLine($"   → Total de jogadores: {_players.Count}");
             Console.ResetColor();
             
@@ -208,6 +317,8 @@ namespace RustlikeServer.Core
 
             byte[] data = movementPacket.Serialize();
             BroadcastToAll(PacketType.PlayerMovement, data, player.Id);
+            
+            // ⭐ REMOVIDO: Log de movimento (muito spam!)
         }
 
         public void BroadcastPlayerDisconnect(int playerId)
@@ -227,7 +338,6 @@ namespace RustlikeServer.Core
             Console.WriteLine($"[GameServer] Novo player ID: {newPlayerId}");
             Console.ResetColor();
 
-            // ⭐ CRITICAL: Cria snapshot dos players para evitar problemas de concorrência
             List<Player> playersSnapshot;
             lock (_playersLock)
             {
@@ -235,7 +345,6 @@ namespace RustlikeServer.Core
                 Console.WriteLine($"[GameServer] Total de players no servidor: {playersSnapshot.Count}");
             }
 
-            // Itera sobre o snapshot
             foreach (var player in playersSnapshot)
             {
                 Console.WriteLine($"[GameServer] Verificando player: {player.Name} (ID: {player.Id})");
@@ -260,13 +369,10 @@ namespace RustlikeServer.Core
                 };
 
                 byte[] data = spawnPacket.Serialize();
-                Console.WriteLine($"[GameServer]      Dados: {data.Length} bytes | Pos=({player.Position.X:F1}, {player.Position.Y:F1}, {player.Position.Z:F1})");
 
                 try
                 {
                     await newClient.SendPacket(PacketType.PlayerSpawn, data);
-                    
-                    // ⭐ IMPORTANTE: Delay entre cada spawn
                     await Task.Delay(50);
                     
                     Console.ForegroundColor = ConsoleColor.Green;
@@ -308,9 +414,19 @@ namespace RustlikeServer.Core
                 await Task.WhenAll(tasks);
             }
 
-            if (sentCount > 0)
+            // ⭐ OTIMIZADO: Só loga broadcasts importantes (não movimento)
+            if (sentCount > 0 && type != PacketType.PlayerMovement)
             {
                 Console.WriteLine($"[GameServer] Broadcast {type} enviado para {sentCount} jogadores (excluindo ID: {excludePlayerId})");
+            }
+        }
+
+        // ⭐ NOVO: Permite acesso aos players para ClientHandler processar comandos
+        public Player GetPlayer(int playerId)
+        {
+            lock (_playersLock)
+            {
+                return _players.TryGetValue(playerId, out var player) ? player : null;
             }
         }
 
