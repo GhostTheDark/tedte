@@ -1,98 +1,73 @@
 using System;
-using System.Net.Sockets;
 using System.Threading.Tasks;
+using LiteNetLib;
 using RustlikeServer.Network;
 using RustlikeServer.World;
 using RustlikeServer.Items;
 
 namespace RustlikeServer.Core
 {
+    /// <summary>
+    /// ⭐ MIGRADO PARA LITENETLIB - Gerencia um cliente conectado
+    /// </summary>
     public class ClientHandler
     {
-        private TcpClient _client;
-        private NetworkStream _stream;
+        private NetPeer _peer;
         private GameServer _server;
         private Player _player;
         private bool _isRunning;
         private bool _isFullyLoaded = false;
 
-        public ClientHandler(TcpClient client, GameServer server)
+        public ClientHandler(NetPeer peer, GameServer server)
         {
-            _client = client;
+            _peer = peer;
             _server = server;
-            _stream = client.GetStream();
             _isRunning = true;
+
+            Console.WriteLine($"[ClientHandler] Novo ClientHandler criado para Peer ID: {peer.Id}");
         }
 
-        public async Task HandleClientAsync()
+        public async Task ProcessPacketAsync(byte[] data)
         {
             try
             {
-                Console.WriteLine($"[ClientHandler] Novo cliente conectado: {_client.Client.RemoteEndPoint}");
+                Packet packet = Packet.Deserialize(data);
+                if (packet == null) return;
 
-                byte[] buffer = new byte[8192];
-                
-                while (_isRunning && _client.Connected)
+                switch (packet.Type)
                 {
-                    int bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length);
-                    
-                    if (bytesRead == 0)
-                    {
-                        Console.WriteLine("[ClientHandler] Cliente desconectado");
+                    case PacketType.ConnectionRequest:
+                        await HandleConnectionRequest(packet.Data);
                         break;
-                    }
 
-                    byte[] receivedData = new byte[bytesRead];
-                    Array.Copy(buffer, receivedData, bytesRead);
-                    
-                    await ProcessPacket(receivedData);
+                    case PacketType.ClientReady:
+                        await HandleClientReady();
+                        break;
+
+                    case PacketType.PlayerMovement:
+                        HandlePlayerMovement(packet.Data);
+                        break;
+
+                    case PacketType.Heartbeat:
+                        HandleHeartbeat();
+                        break;
+
+                    case PacketType.PlayerDisconnect:
+                        Disconnect();
+                        break;
+
+                    case PacketType.ItemUse:
+                        await HandleItemUse(packet.Data);
+                        break;
+
+                    case PacketType.ItemMove:
+                        await HandleItemMove(packet.Data);
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ClientHandler] Erro: {ex.Message}");
-            }
-            finally
-            {
-                Disconnect();
-            }
-        }
-
-        private async Task ProcessPacket(byte[] data)
-        {
-            Packet packet = Packet.Deserialize(data);
-            if (packet == null) return;
-
-            switch (packet.Type)
-            {
-                case PacketType.ConnectionRequest:
-                    await HandleConnectionRequest(packet.Data);
-                    break;
-
-                case PacketType.ClientReady:
-                    await HandleClientReady();
-                    break;
-
-                case PacketType.PlayerMovement:
-                    HandlePlayerMovement(packet.Data);
-                    break;
-
-                case PacketType.Heartbeat:
-                    HandleHeartbeat();
-                    break;
-
-                case PacketType.PlayerDisconnect:
-                    Disconnect();
-                    break;
-
-                // ⭐ NOVOS: Pacotes de inventário
-                case PacketType.ItemUse:
-                    await HandleItemUse(packet.Data);
-                    break;
-
-                case PacketType.ItemMove:
-                    await HandleItemMove(packet.Data);
-                    break;
+                Console.WriteLine($"[ClientHandler] Erro ao processar pacote: {ex.Message}");
             }
         }
 
@@ -102,12 +77,14 @@ namespace RustlikeServer.Core
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"\n[ClientHandler] ===== NOVA CONEXÃO =====");
             Console.WriteLine($"[ClientHandler] Nome: {request.PlayerName}");
+            Console.WriteLine($"[ClientHandler] Peer ID: {_peer.Id}");
+            Console.WriteLine($"[ClientHandler] Endpoint: {_peer.Address}:{_peer.Port}");
             Console.ResetColor();
 
             _player = _server.CreatePlayer(request.PlayerName);
             Console.WriteLine($"[ClientHandler] Player criado com ID: {_player.Id}");
 
-            _server.RegisterClient(_player.Id, this);
+            _server.RegisterClient(_player.Id, _peer, this);
             Console.WriteLine($"[ClientHandler] ClientHandler registrado");
 
             var response = new ConnectionAcceptPacket
@@ -118,11 +95,14 @@ namespace RustlikeServer.Core
                 SpawnZ = _player.Position.Z
             };
 
-            await SendPacket(PacketType.ConnectionAccept, response.Serialize());
+            SendPacket(PacketType.ConnectionAccept, response.Serialize());
+            
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"[ClientHandler] ✅ ConnectionAccept ENVIADO para {_player.Name} (ID: {_player.Id})");
             Console.WriteLine($"[ClientHandler] ⏳ AGUARDANDO ClientReady do cliente...");
             Console.ResetColor();
+
+            await Task.CompletedTask;
         }
 
         private async Task HandleClientReady()
@@ -178,7 +158,6 @@ namespace RustlikeServer.Core
             }
         }
 
-        // ⭐ NOVO: Usa item do inventário
         private async Task HandleItemUse(byte[] data)
         {
             if (_player == null) return;
@@ -186,7 +165,6 @@ namespace RustlikeServer.Core
             var packet = ItemUsePacket.Deserialize(data);
             Console.WriteLine($"[ClientHandler] 🎒 {_player.Name} usou item do slot {packet.SlotIndex}");
 
-            // Consome o item
             var itemDef = _player.Inventory.ConsumeItem(packet.SlotIndex);
             if (itemDef == null)
             {
@@ -194,7 +172,6 @@ namespace RustlikeServer.Core
                 return;
             }
 
-            // Aplica efeitos nas stats
             if (itemDef.HealthRestore > 0)
                 _player.Stats.Heal(itemDef.HealthRestore);
             
@@ -208,11 +185,9 @@ namespace RustlikeServer.Core
             Console.WriteLine($"[ClientHandler] ✅ Efeitos aplicados: HP+{itemDef.HealthRestore} Hunger+{itemDef.HungerRestore} Thirst+{itemDef.ThirstRestore}");
             Console.ResetColor();
 
-            // Sincroniza inventário atualizado
             await SendInventoryUpdate();
         }
 
-        // ⭐ NOVO: Move item entre slots
         private async Task HandleItemMove(byte[] data)
         {
             if (_player == null) return;
@@ -227,7 +202,6 @@ namespace RustlikeServer.Core
             }
         }
 
-        // ⭐ NOVO: Envia inventário completo para o cliente
         private async Task SendInventoryUpdate()
         {
             var inventoryPacket = new InventoryUpdatePacket();
@@ -246,19 +220,23 @@ namespace RustlikeServer.Core
                 }
             }
 
-            await SendPacket(PacketType.InventoryUpdate, inventoryPacket.Serialize());
+            SendPacket(PacketType.InventoryUpdate, inventoryPacket.Serialize());
             Console.WriteLine($"[ClientHandler] 📦 Inventário sincronizado: {inventoryPacket.Slots.Count} slots com itens");
+
+            await Task.CompletedTask;
         }
 
-        public async Task SendPacket(PacketType type, byte[] data)
+        /// <summary>
+        /// ⭐ NOVO: Envia pacote via LiteNetLib
+        /// </summary>
+        public void SendPacket(PacketType type, byte[] data, LiteNetLib.DeliveryMethod method = LiteNetLib.DeliveryMethod.ReliableOrdered)
         {
             try
             {
-                if (!_client.Connected) return;
+                if (_peer == null || _peer.ConnectionState != ConnectionState.Connected)
+                    return;
 
-                Packet packet = new Packet(type, data);
-                byte[] serialized = packet.Serialize();
-                await _stream.WriteAsync(serialized, 0, serialized.Length);
+                _server.SendPacket(_peer, type, data, method);
             }
             catch (Exception ex)
             {
@@ -282,12 +260,15 @@ namespace RustlikeServer.Core
                 _server.RemovePlayer(_player.Id);
             }
 
-            _stream?.Close();
-            _client?.Close();
+            if (_peer != null && _peer.ConnectionState == ConnectionState.Connected)
+            {
+                _peer.Disconnect();
+            }
         }
 
         public Player GetPlayer() => _player;
-        public bool IsConnected() => _isRunning && _client.Connected;
+        public NetPeer GetPeer() => _peer;
+        public bool IsConnected() => _isRunning && _peer != null && _peer.ConnectionState == ConnectionState.Connected;
         public bool IsFullyLoaded() => _isFullyLoaded;
     }
 }
