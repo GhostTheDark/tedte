@@ -1,43 +1,86 @@
 using System;
 using System.Collections.Generic;
-using System.Net.Sockets;
 using System.Threading.Tasks;
 using UnityEngine;
+using LiteNetLib;
+using LiteNetLib.Utils;
 
 namespace RustlikeClient.Network
 {
-    public class ClientNetworking : MonoBehaviour
+    /// <summary>
+    /// ⭐ MIGRADO PARA LITENETLIB - Cliente UDP com confiabilidade configurável
+    /// </summary>
+    public class ClientNetworking : MonoBehaviour, INetEventListener
     {
-        private TcpClient _client;
-        private NetworkStream _stream;
+        private NetManager _netManager;
+        private NetPeer _serverPeer;
         private bool _isConnected;
-        private byte[] _receiveBuffer;
 
         public event Action<Packet> OnPacketReceived;
         public event Action OnDisconnected;
 
+        // ⭐ Writer reutilizável
+        private NetDataWriter _writer;
+
+        // Queue para processar pacotes na main thread do Unity
+        private Queue<byte[]> _packetQueue = new Queue<byte[]>();
+        private object _queueLock = new object();
+
         private void Awake()
         {
-            _receiveBuffer = new byte[8192];
+            _writer = new NetDataWriter();
+
+            // ⭐ Configura LiteNetLib
+            _netManager = new NetManager(this)
+            {
+                AutoRecycle = true,
+                UpdateTime = 15,
+                DisconnectTimeout = 10000,
+                PingInterval = 1000,
+                UnconnectedMessagesEnabled = false
+            };
+        }
+
+        private void Update()
+        {
+            // ⭐ IMPORTANTE: PollEvents deve ser chamado na thread do Unity
+            if (_netManager != null)
+            {
+                _netManager.PollEvents();
+            }
+
+            // Processa pacotes na main thread
+            ProcessPacketQueue();
         }
 
         public async Task<bool> ConnectAsync(string ip, int port)
         {
             try
             {
-                Debug.Log($"[ClientNetworking] Conectando a {ip}:{port}...");
+                Debug.Log($"[ClientNetworking] Conectando a {ip}:{port} (LiteNetLib/UDP)...");
                 
-                _client = new TcpClient();
-                await _client.ConnectAsync(ip, port);
-                _stream = _client.GetStream();
-                _isConnected = true;
+                _netManager.Start();
+                _serverPeer = _netManager.Connect(ip, port, "");
 
-                Debug.Log("[ClientNetworking] Conectado ao servidor!");
+                // Aguarda conexão (timeout 5s)
+                float timeout = 5f;
+                while (_serverPeer.ConnectionState == ConnectionState.Outgoing && timeout > 0)
+                {
+                    await Task.Delay(100);
+                    timeout -= 0.1f;
+                }
 
-                // Inicia recepção de pacotes
-                _ = ReceivePacketsAsync();
-
-                return true;
+                if (_serverPeer.ConnectionState == ConnectionState.Connected)
+                {
+                    _isConnected = true;
+                    Debug.Log("[ClientNetworking] ✅ Conectado ao servidor!");
+                    return true;
+                }
+                else
+                {
+                    Debug.LogError($"[ClientNetworking] ❌ Timeout na conexão (estado: {_serverPeer.ConnectionState})");
+                    return false;
+                }
             }
             catch (Exception ex)
             {
@@ -46,55 +89,127 @@ namespace RustlikeClient.Network
             }
         }
 
-        private async Task ReceivePacketsAsync()
-        {
-            try
-            {
-                while (_isConnected && _client.Connected)
-                {
-                    int bytesRead = await _stream.ReadAsync(_receiveBuffer, 0, _receiveBuffer.Length);
-                    
-                    if (bytesRead == 0)
-                    {
-                        Debug.LogWarning("[ClientNetworking] Servidor desconectou");
-                        Disconnect();
-                        break;
-                    }
+        // ==================== LITENETLIB CALLBACKS ====================
 
-                    byte[] receivedData = new byte[bytesRead];
-                    Array.Copy(_receiveBuffer, receivedData, bytesRead);
-                    
-                    Packet packet = Packet.Deserialize(receivedData);
-                    if (packet != null)
-                    {
-                        // Invoca no main thread do Unity
-                        UnityMainThreadDispatcher.Instance.Enqueue(() =>
-                        {
-                            OnPacketReceived?.Invoke(packet);
-                        });
-                    }
-                }
-            }
-            catch (Exception ex)
+        public void OnPeerConnected(NetPeer peer)
+        {
+            Debug.Log($"[ClientNetworking] 🔗 Conectado ao servidor: {peer.Address}:{peer.Port}");
+            _serverPeer = peer;
+            _isConnected = true;
+        }
+
+        public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
+        {
+            Debug.LogWarning($"[ClientNetworking] ❌ Desconectado: {disconnectInfo.Reason}");
+            _isConnected = false;
+            _serverPeer = null;
+
+            UnityMainThreadDispatcher.Instance.Enqueue(() =>
             {
-                Debug.LogError($"[ClientNetworking] Erro na recepção: {ex.Message}");
-                Disconnect();
+                OnDisconnected?.Invoke();
+            });
+        }
+
+        public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
+        {
+            // Lê dados do pacote
+            byte[] data = reader.GetRemainingBytes();
+            
+            // Adiciona à fila para processar na main thread
+            lock (_queueLock)
+            {
+                _packetQueue.Enqueue(data);
+            }
+
+            reader.Recycle();
+        }
+
+        public void OnNetworkError(System.Net.IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
+        {
+            Debug.LogError($"[ClientNetworking] Erro de rede: {socketError}");
+        }
+
+        public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
+        {
+            // Não usado
+        }
+
+        public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
+        {
+            // Opcional: logar latência
+            if (latency > 200)
+            {
+                Debug.LogWarning($"[ClientNetworking] ⚠️ Alta latência: {latency}ms");
             }
         }
 
-        public async Task SendPacketAsync(PacketType type, byte[] data)
+        public void OnConnectionRequest(ConnectionRequest request)
         {
-            if (!_isConnected || _stream == null) return;
+            // Cliente não recebe connection requests
+        }
+
+        // ==================== ENVIO DE PACOTES ====================
+
+        /// <summary>
+        /// Envia pacote com delivery method configurável
+        /// </summary>
+        public async Task SendPacketAsync(PacketType type, byte[] data, DeliveryMethod method = DeliveryMethod.ReliableOrdered)
+        {
+            if (!_isConnected || _serverPeer == null) return;
 
             try
             {
-                Packet packet = new Packet(type, data);
-                byte[] serialized = packet.Serialize();
-                await _stream.WriteAsync(serialized, 0, serialized.Length);
+                _writer.Reset();
+                _writer.Put((byte)type);
+                _writer.Put(data.Length);
+                _writer.Put(data);
+                
+                _serverPeer.Send(_writer, method);
+
+                await Task.CompletedTask;
             }
             catch (Exception ex)
             {
                 Debug.LogError($"[ClientNetworking] Erro ao enviar pacote: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Versão síncrona para envios rápidos (movimento)
+        /// </summary>
+        public void SendPacket(PacketType type, byte[] data, DeliveryMethod method = DeliveryMethod.ReliableOrdered)
+        {
+            if (!_isConnected || _serverPeer == null) return;
+
+            try
+            {
+                _writer.Reset();
+                _writer.Put((byte)type);
+                _writer.Put(data.Length);
+                _writer.Put(data);
+                
+                _serverPeer.Send(_writer, method);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[ClientNetworking] Erro ao enviar pacote: {ex.Message}");
+            }
+        }
+
+        private void ProcessPacketQueue()
+        {
+            lock (_queueLock)
+            {
+                while (_packetQueue.Count > 0)
+                {
+                    byte[] data = _packetQueue.Dequeue();
+                    
+                    Packet packet = Packet.Deserialize(data);
+                    if (packet != null)
+                    {
+                        OnPacketReceived?.Invoke(packet);
+                    }
+                }
             }
         }
 
@@ -103,15 +218,15 @@ namespace RustlikeClient.Network
             if (!_isConnected) return;
 
             _isConnected = false;
-            _stream?.Close();
-            _client?.Close();
+
+            if (_serverPeer != null)
+            {
+                _serverPeer.Disconnect();
+            }
+
+            _netManager?.Stop();
 
             Debug.Log("[ClientNetworking] Desconectado do servidor");
-            
-            UnityMainThreadDispatcher.Instance.Enqueue(() =>
-            {
-                OnDisconnected?.Invoke();
-            });
         }
 
         private void OnApplicationQuit()
@@ -119,10 +234,34 @@ namespace RustlikeClient.Network
             Disconnect();
         }
 
-        public bool IsConnected() => _isConnected && _client != null && _client.Connected;
+        private void OnDestroy()
+        {
+            Disconnect();
+        }
+
+        public bool IsConnected() => _isConnected && _serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected;
+        
+        public int GetPing() => _serverPeer?.Ping ?? -1;
+
+        /// <summary>
+        /// Para debug
+        /// </summary>
+        private void OnGUI()
+        {
+            if (Input.GetKey(KeyCode.F5) && _isConnected)
+            {
+                GUI.Box(new Rect(10, 450, 250, 100), "LiteNetLib Stats (F5)");
+                GUI.Label(new Rect(20, 475, 230, 20), $"Ping: {GetPing()}ms");
+                GUI.Label(new Rect(20, 495, 230, 20), $"State: {_serverPeer?.ConnectionState}");
+                GUI.Label(new Rect(20, 515, 230, 20), $"Packets Sent: {_serverPeer?.Statistics.PacketsSent ?? 0}");
+                GUI.Label(new Rect(20, 535, 230, 20), $"Packets Received: {_serverPeer?.Statistics.PacketsReceived ?? 0}");
+            }
+        }
     }
 
-    // Helper para executar código na thread principal do Unity
+    /// <summary>
+    /// Helper para executar código na thread principal do Unity
+    /// </summary>
     public class UnityMainThreadDispatcher : MonoBehaviour
     {
         private static UnityMainThreadDispatcher _instance;
